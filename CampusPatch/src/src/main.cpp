@@ -6,7 +6,6 @@
 static HMODULE g_selfModule = nullptr;
 static char g_crashDumpDir[MAX_PATH] = {};
 
-// Crash dump handler - writes minidump on unhandled exception
 static LONG WINAPI CrashDumpFilter(EXCEPTION_POINTERS* ep) {
     if (g_crashDumpDir[0] == 0) return EXCEPTION_CONTINUE_SEARCH;
 
@@ -42,10 +41,8 @@ static void InstallCrashHandler(HMODULE self) {
     SetUnhandledExceptionFilter(CrashDumpFilter);
 }
 
-// Main init thread - runs after DllMain returns
 static DWORD WINAPI InitThread(LPVOID)
 {
-    // Wait for game modules (up to 20 seconds)
     for (int i = 0; i < 200; i++) {
         if (GetModuleHandleA("GameAssembly.dll") && GetModuleHandleA("Referee.dll")) break;
         Sleep(100);
@@ -68,7 +65,6 @@ static DWORD WINAPI InitThread(LPVOID)
     return 0;
 }
 
-// Console setup with VR disabled and ANSI colors
 static void CreateConsole()
 {
     // Disable VR to prevent OpenVR initialization spam
@@ -80,10 +76,16 @@ static void CreateConsole()
     AllocConsole();
     FILE* f;
     freopen_s(&f, "CONOUT$", "w", stdout);
-    freopen_s(&f, "NUL", "w", stderr);  // Discard stderr (VR Path errors, etc.)
+
+    // Redirect stderr to NUL using Windows API
+    HANDLE hNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_READ,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hNul != INVALID_HANDLE_VALUE) {
+        SetStdHandle(STD_ERROR_HANDLE, hNul);
+    }
+
     SetConsoleTitleA("Campus - CampusPatch2025");
 
-    // Enable ANSI color support
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     if (h != INVALID_HANDLE_VALUE && h != nullptr) {
         DWORD mode = 0;
@@ -96,7 +98,6 @@ static void CreateConsole()
         "\x1b[38;5;240m(build " __DATE__ " " __TIME__ ")\x1b[0m\n");
 }
 
-// DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
@@ -104,7 +105,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_selfModule = hModule;
         InstallCrashHandler(hModule);
         CreateConsole();
-        // Run init on separate thread to avoid loader lock
         HANDLE h = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         if (h) CloseHandle(h);
     }

@@ -60,6 +60,12 @@ namespace CampusLogging {
             lineBuf_.push_back(c);
             if (c != '\n') return;
 
+            // Filter out VR Path Registry messages
+            if (lineBuf_.find("Unable to read VR Path Registry") != std::string::npos) {
+                lineBuf_.clear();
+                return;
+            }
+
             writeBoth(lineBuf_.data(), static_cast<DWORD>(lineBuf_.size()));
             if (hFile_ != INVALID_HANDLE_VALUE) FlushFileBuffers(hFile_);
             lineBuf_.clear();
@@ -90,7 +96,8 @@ namespace CampusLogging {
 
                     if (si < sizeof(stripped)) {
                         stripped[si++] = (char)c;
-                    } else {
+                    }
+                    else {
                         WriteFile(hFile_, stripped, si, &w, nullptr);
                         si = 0;
                         stripped[si++] = (char)c;
