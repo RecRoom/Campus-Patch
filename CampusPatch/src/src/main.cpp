@@ -1,5 +1,6 @@
 #include "RR/Patching/Patches.h"
 #include "Utils/logging.h"
+#include "Discord/DiscordRPC_Presence.h"
 #include <DbgHelp.h>
 #pragma comment(lib, "dbghelp.lib")
 
@@ -62,12 +63,15 @@ static DWORD WINAPI InitThread(LPVOID)
 
     std::cout << TAG_INIT() << "timing: Resolve " << (t1 - t0) << "ms, Patch "
         << (t2 - t1) << "ms, total " << (t2 - t0) << "ms\n";
+
+    // Start Discord RPC
+    DiscordRPC::Start();
+
     return 0;
 }
 
 static void CreateConsole()
 {
-    // Disable VR to prevent OpenVR initialization spam
     SetEnvironmentVariableA("STEAMVR_ENABLED", "0");
     SetEnvironmentVariableA("OPENVR_ENABLED", "0");
     SetEnvironmentVariableA("DISABLE_VR", "1");
@@ -76,14 +80,7 @@ static void CreateConsole()
     AllocConsole();
     FILE* f;
     freopen_s(&f, "CONOUT$", "w", stdout);
-
-    // Redirect stderr to NUL using Windows API
-    HANDLE hNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_READ,
-        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hNul != INVALID_HANDLE_VALUE) {
-        SetStdHandle(STD_ERROR_HANDLE, hNul);
-    }
-
+    freopen_s(&f, "NUL", "w", stderr);
     SetConsoleTitleA("Campus - CampusPatch2025");
 
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -107,6 +104,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         CreateConsole();
         HANDLE h = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         if (h) CloseHandle(h);
+    }
+    else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        DiscordRPC::Shutdown();
     }
     return TRUE;
 }
