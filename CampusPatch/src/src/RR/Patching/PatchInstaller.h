@@ -9,7 +9,6 @@
 #include "Il2cppResolution.h"
 #include "SendRequest.h"
 #include "UIGradient.h"
-#include "PhotonRedirection.h"
 #include "../../Utils/globals.h"
 #include "../../Utils/deps/minhook/include/MinHook.h"
 
@@ -46,7 +45,7 @@ namespace RR::Patches {
             << "\n";
     }
 
-    static void hook(const char* tag, uintptr_t abs, void* detour, void** orig, const char* label) {
+    static void hook(const std::string& tag, uintptr_t abs, void* detour, void** orig, const char* label) {
         MH_STATUS s = MH_CreateHook((void*)abs, detour, (LPVOID*)orig);
         if (s == MH_OK) s = MH_EnableHook((void*)abs);
         std::cout << tag << label
@@ -78,33 +77,12 @@ namespace RR::Patches {
         // URI rewrite
         hook(TAG_HTTP(), GA + RR::Methods::HTTPManager::SendRequest,
             (void*)SendRequest_H, (void**)&SendRequest_O, "HTTPManager.SendRequest (URI rewrite)");
-
-        // DISABLED - RecNet response callback breaks the game
-        // hook(TAG_HTTP(), GA + RR::Methods::RecNetHttp::ResponseCallback,
-        //      (void*)RecNetResponse_H, (void**)&RecNetResponse_O, "RecNet response callback");
-
-        // DISABLED - HTTP response hooks break the game
-        // hook(TAG_HTTP(), GA + RR::Methods::HttpResponse::Receive,
-        //      (void*)Receive_H, (void**)&Receive_O, "HTTPResponse.Receive");
-        // hook(TAG_HTTP(), GA + RR::Methods::HttpResponse::get_DataAsText,
-        //      (void*)GetDataAsText_H, (void**)&GetDataAsText_O, "HTTPResponse.get_DataAsText");
         std::cout << "\n";
 
         // Gradient recolor
         hook(TAG_UI(), GA + RR::Methods::UIGradient::set_Gradient,
             (void*)UIGradient_set_Gradient_H, (void**)&UIGradient_set_Gradient_O,
             "UIGradient.set_Gradient (recolor)");
-        std::cout << "\n";
-
-        // Photon redirect
-        hook(TAG_PHOTON(), GA + RR::Methods::Photon::OLPEILEPEAD_JBNCMFDFDLM,
-            (void*)RealtimeConnect_H, (void**)&RealtimeConnect_O, "Realtime connect");
-        hook(TAG_PHOTON(), GA + RR::Methods::Photon::OEOMKFKDCCG_JBNCMFDFDLM,
-            (void*)PunConnect_H, (void**)&PunConnect_O, "PUN connect");
-        hook(TAG_PHOTON(), GA + RR::Methods::Photon::VoiceConnection_ConnectUsingSettings,
-            (void*)VoiceConnect_H, (void**)&VoiceConnect_O, "Voice connect");
-        hook(TAG_PHOTON(), GA + RR::Methods::Photon::PhotonVoiceNetwork_ConnectUsingSettings,
-            (void*)VoicePUNConnect_H, (void**)&VoicePUNConnect_O, "Voice PUN connect");
         std::cout << "\n";
 
         std::cout << TAG_INIT() << "all hooks installed  |  target = "

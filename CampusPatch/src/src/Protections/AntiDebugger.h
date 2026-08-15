@@ -1,0 +1,233 @@
+#pragma once
+
+#include <windows.h>
+#include <psapi.h>
+#include <iostream>
+#include <string>
+#include <tlhelp32.h>
+#include "../RR/Patching/Console.h"
+
+#pragma comment(lib, "psapi.lib")
+
+namespace AntiDebugger {
+
+    typedef struct _PEB_CUSTOM {
+        BYTE Reserved1[2];
+        BYTE BeingDebugged;
+        BYTE Reserved2[1];
+        PVOID Reserved3[2];
+        PVOID Ldr;
+        PVOID ProcessParameters;
+        PVOID Reserved4[3];
+        PVOID AtlThunkSListPtr;
+        PVOID Reserved5;
+        ULONG Reserved6;
+        PVOID Reserved7;
+        ULONG Reserved8;
+        ULONG AtlThunkSListPtr32;
+        PVOID Reserved9[45];
+        BYTE Reserved10[96];
+        PVOID PostProcessInitRoutine;
+        BYTE Reserved11[128];
+        PVOID Reserved12[1];
+        ULONG SessionId;
+        ULONG NtGlobalFlag;
+    } PEB_CUSTOM, * PPEB_CUSTOM;
+
+    static bool IsDebuggerAttached() {
+        return IsDebuggerPresent() != 0;
+    }
+
+    static bool IsRemoteDebuggerAttached() {
+        PPEB_CUSTOM peb = nullptr;
+
+#ifdef _WIN64
+        peb = (PPEB_CUSTOM)__readgsqword(0x60);
+#else
+        peb = (PPEB_CUSTOM)__readfsdword(0x30);
+#endif
+
+        if (peb && peb->BeingDebugged) {
+            return true;
+        }
+
+        if (peb && (peb->NtGlobalFlag & 0x70)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    static bool HasHardwareBreakpoints() {
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(GetCurrentThread(), &ctx)) {
+            return ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3;
+        }
+        return false;
+    }
+
+    static bool IsDebuggerViaTiming() {
+        LARGE_INTEGER start, end, freq;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&start);
+
+        for (int i = 0; i < 10000; i++) { volatile int x = i * i; }
+
+        QueryPerformanceCounter(&end);
+        double elapsed = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
+
+        return elapsed > 0.002;
+    }
+
+    static bool IsParentProcessDebugger() {
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+
+        PROCESSENTRY32 pe32;
+        pe32.dwSize = sizeof(PROCESSENTRY32);
+
+        if (Process32First(hSnapshot, &pe32)) {
+            do {
+                if (pe32.th32ProcessID == GetCurrentProcessId()) {
+                    DWORD parentPid = pe32.th32ParentProcessID;
+                    CloseHandle(hSnapshot);
+
+                    HANDLE hParent = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, parentPid);
+                    if (hParent) {
+                        char name[MAX_PATH];
+                        DWORD size = MAX_PATH;
+                        if (QueryFullProcessImageNameA(hParent, 0, name, &size)) {
+                            std::string parentName = name;
+                            CloseHandle(hParent);
+
+                            if (parentName.find("debug") != std::string::npos ||
+                                parentName.find("dbg") != std::string::npos ||
+                                parentName.find("olly") != std::string::npos ||
+                                parentName.find("x64dbg") != std::string::npos ||
+                                parentName.find("ida") != std::string::npos ||
+                                parentName.find("windbg") != std::string::npos) {
+                                return true;
+                            }
+                        }
+                        else {
+                            CloseHandle(hParent);
+                        }
+                    }
+                    return false;
+                }
+            } while (Process32Next(hSnapshot, &pe32));
+        }
+
+        CloseHandle(hSnapshot);
+        return false;
+    }
+
+    static bool IsDebuggedViaNtQuery() {
+        typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(
+            HANDLE ProcessHandle,
+            ULONG ProcessInformationClass,
+            PVOID ProcessInformation,
+            ULONG ProcessInformationLength,
+            PULONG ReturnLength
+            );
+
+        HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+        if (!hNtdll) return false;
+
+        auto NtQueryInformationProcess = (pNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
+        if (!NtQueryInformationProcess) return false;
+
+        ULONG debugPort = 0;
+        NTSTATUS status = NtQueryInformationProcess(
+            GetCurrentProcess(),
+            7,
+            &debugPort,
+            sizeof(debugPort),
+            nullptr
+        );
+
+        if (status == 0 && debugPort != 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    static void ShowAutoClosePopup() {
+        MessageBoxA(
+            NULL,
+            "Kurt Cobain says: An unauthorized application was detected.\n\n"
+            "Campus doesn't allow Debuggers.\n\n"
+            "This window will close automatically.",
+            "Kurt Cobain's Drug Problem",
+            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
+        );
+
+        Sleep(3000);
+        TerminateProcess(GetCurrentProcess(), 1);
+    }
+
+    static bool PerformAntiDebugChecks() {
+        std::cout << TAG_ANTI() << "Kurt Cobain is running anti-debugger checks...\n";
+
+        if (IsDebuggerAttached()) {
+            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (IsDebuggerPresent)\n";
+            ShowAutoClosePopup();
+            return false;
+        }
+
+        if (IsRemoteDebuggerAttached()) {
+            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (PEB flags)\n";
+            ShowAutoClosePopup();
+            return false;
+        }
+
+        if (HasHardwareBreakpoints()) {
+            std::cout << TAG_ANTI() << "Kurt Cobain detected hardware breakpoints\n";
+            ShowAutoClosePopup();
+            return false;
+        }
+
+        if (IsParentProcessDebugger()) {
+            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger parent process\n";
+            ShowAutoClosePopup();
+            return false;
+        }
+
+        if (IsDebuggedViaNtQuery()) {
+            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (NtQueryInformationProcess)\n";
+            ShowAutoClosePopup();
+            return false;
+        }
+
+        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-debugger checks passed.\n";
+        return true;
+    }
+
+    static void AntiDebuggerThread() {
+        while (true) {
+            Sleep(5000);
+
+            if (IsDebuggerAttached() ||
+                IsRemoteDebuggerAttached() ||
+                HasHardwareBreakpoints() ||
+                IsParentProcessDebugger() ||
+                IsDebuggedViaNtQuery()) {
+
+                std::cout << TAG_ANTI() << "Kurt Cobain detected debugger during monitoring\n";
+                ShowAutoClosePopup();
+                return;
+            }
+        }
+    }
+
+    static void StartMonitoring() {
+        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-debugger monitoring...\n";
+        CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+            AntiDebuggerThread();
+            return 0;
+            }, nullptr, 0, nullptr);
+    }
+
+} // namespace AntiDebugger

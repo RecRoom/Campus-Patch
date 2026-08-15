@@ -1,4 +1,5 @@
 #include "RR/Patching/Patches.h"
+#include "Protections/Protections.h"
 #include "Utils/logging.h"
 #include "Discord/DiscordRPC_Presence.h"
 #include <DbgHelp.h>
@@ -53,6 +54,8 @@ static DWORD WINAPI InitThread(LPVOID)
         return 1;
     }
 
+    Protections::Initialize();
+
     CampusLogging::Init(g_selfModule);
 
     ULONGLONG t0 = GetTickCount64();
@@ -64,7 +67,6 @@ static DWORD WINAPI InitThread(LPVOID)
     std::cout << TAG_INIT() << "timing: Resolve " << (t1 - t0) << "ms, Patch "
         << (t2 - t1) << "ms, total " << (t2 - t0) << "ms\n";
 
-    // Start Discord RPC
     DiscordRPC::Start();
 
     return 0;

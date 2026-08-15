@@ -19,5 +19,4 @@
 #include "HttpDebug.h"
 #include "SendRequest.h"
 #include "UIGradient.h"
-#include "PhotonRedirection.h"
 #include "PatchInstaller.h"
