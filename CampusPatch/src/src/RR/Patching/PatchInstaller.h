@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <algorithm>  // Added for std::transform
 #include "../Methods.h"
 #include "Console.h"
 #include "ServerConfiguration.h"
@@ -9,10 +10,11 @@
 #include "Il2cppResolution.h"
 #include "SendRequest.h"
 #include "UIGradient.h"
+#include "RadioPatch.h"
 #include "../../Utils/globals.h"
+#include "../../Utils/scan.h"  // Added for PatternScan
 #include "../../Utils/deps/minhook/include/MinHook.h"
 
-// Patch Installer
 namespace RR::Patches {
     void Resolve() {
         RetAddr = PatternScan<uint64_t*>("FF 23", GA, NtHeaders->OptionalHeader.SizeOfImage);
@@ -62,30 +64,45 @@ namespace RR::Patches {
 
         std::cout << "\n";
 
-        // Referee bypass
+        // Referee anti-tamper checks - NOP all 4
         hook(TAG_REFEREE(), Referee + RR::Methods::Referee::Check1, (void*)nop_H, (void**)&nop_O, "Check1");
         hook(TAG_REFEREE(), Referee + RR::Methods::Referee::Check2, (void*)nop_H, (void**)&nop_O, "Check2");
         hook(TAG_REFEREE(), Referee + RR::Methods::Referee::Check3, (void*)nop_H, (void**)&nop_O, "Check3");
         hook(TAG_REFEREE(), Referee + RR::Methods::Referee::Check4, (void*)nop_H, (void**)&nop_O, "Check4");
         std::cout << "\n";
 
-        // TLS bypass
+        // TLS certificate validation bypass
         hook(TAG_TLS(), GA + RR::Methods::LegacyTlsAuthentication::NotifyServerCertificate,
-            (void*)nop_H, (void**)&nop_O, "NotifyServerCertificate (accept self-signed)");
+            (void*)nop_H, (void**)&nop_O, "NotifyServerCertificate");
         std::cout << "\n";
 
-        // URI rewrite
+        // HTTP request handler - redirects ns.rec.net to gameauth.ddns.net
         hook(TAG_HTTP(), GA + RR::Methods::HTTPManager::SendRequest,
-            (void*)SendRequest_H, (void**)&SendRequest_O, "HTTPManager.SendRequest (URI rewrite)");
+            (void*)SendRequest_H, (void**)&SendRequest_O, "HTTPManager.SendRequest");
         std::cout << "\n";
 
-        // Gradient recolor
+        // UI Gradient recolor
         hook(TAG_UI(), GA + RR::Methods::UIGradient::set_Gradient,
             (void*)UIGradient_set_Gradient_H, (void**)&UIGradient_set_Gradient_O,
-            "UIGradient.set_Gradient (recolor)");
+            "UIGradient.set_Gradient");
         std::cout << "\n";
 
+        // IMAGE SIGNATURE PATCH - DISABLED
+        std::cout << "[IMAGES] " << "[*] ImageSignature patch: DISABLED\n";
+
+        // Radio Patches - DISABLED
+        // RR::Patches::InstallRadioPatches();
+        // std::cout << "\n";
+
+        // FOV Patch - DISABLED (linker errors)
+        // FOVPatch::InstallFOVPatch();
+        // std::cout << "\n";
+
+        std::cout << "\n";
         std::cout << TAG_INIT() << "all hooks installed  |  target = "
             << CLR_YELLOW << CAMPUS_NAMESERVER_HOST << CLR_RESET << "\n";
+        std::cout << TAG_INIT() << "image signature patch: DISABLED\n";
+        std::cout << TAG_INIT() << "radio patches: DISABLED\n";
+        std::cout << TAG_INIT() << "FOV patch: DISABLED\n";
     }
 }

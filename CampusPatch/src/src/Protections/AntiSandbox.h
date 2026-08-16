@@ -5,7 +5,9 @@
 #include <intrin.h>
 #include <string>
 #include <iostream>
+#include <algorithm>
 #include "../RR/Patching/Console.h"
+#include "AntiKill.h"
 
 namespace AntiSandbox {
 
@@ -40,8 +42,11 @@ namespace AntiSandbox {
         if (Process32First(hSnapshot, &pe32)) {
             do {
                 std::string name = pe32.szExeFile;
+                std::transform(name.begin(), name.end(), name.begin(), ::tolower);
                 for (int i = 0; vmProcesses[i]; i++) {
-                    if (name.find(vmProcesses[i]) != std::string::npos) {
+                    std::string vmProc = vmProcesses[i];
+                    std::transform(vmProc.begin(), vmProc.end(), vmProc.begin(), ::tolower);
+                    if (name.find(vmProc) != std::string::npos) {
                         CloseHandle(hSnapshot);
                         return true;
                     }
@@ -71,8 +76,11 @@ namespace AntiSandbox {
             DWORD size = sizeof(biosVendor);
             if (RegQueryValueExA(hKey, "SystemManufacturer", nullptr, nullptr, (LPBYTE)biosVendor, &size) == ERROR_SUCCESS) {
                 std::string vendor = biosVendor;
+                std::transform(vendor.begin(), vendor.end(), vendor.begin(), ::tolower);
                 for (int i = 0; vmDevices[i]; i++) {
-                    if (vendor.find(vmDevices[i]) != std::string::npos) {
+                    std::string vmDev = vmDevices[i];
+                    std::transform(vmDev.begin(), vmDev.end(), vmDev.begin(), ::tolower);
+                    if (vendor.find(vmDev) != std::string::npos) {
                         RegCloseKey(hKey);
                         return true;
                     }
@@ -106,44 +114,30 @@ namespace AntiSandbox {
         return diff2 - diff1 > diff1 * 2;
     }
 
-    static void ShowAutoClosePopup() {
-        MessageBoxA(
-            NULL,
-            "Kurt Cobain says: Virtual machine detected.\n\n"
-            "Campus doesn't allow Virtual Machines.\n\n"
-            "This window will close automatically.",
-            "Kurt Cobain's Drug Problem",
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
-        );
-
-        Sleep(3000);
-        TerminateProcess(GetCurrentProcess(), 1);
-    }
-
     static bool PerformAntiSandboxChecks() {
         std::cout << TAG_ANTI() << "Kurt Cobain is running anti-sandbox checks...\n";
 
         if (IsVirtualMachine()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected VM (CPUID)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Virtual machine detected (CPUID)");
             return false;
         }
 
         if (IsVMViaStrings()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected VM (processes)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Virtual machine detected (processes)");
             return false;
         }
 
         if (IsVMViaDevices()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected VM (devices)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Virtual machine detected (devices)");
             return false;
         }
 
         if (IsLowMemoryVM()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected VM (low memory)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Virtual machine detected (low memory)");
             return false;
         }
 
@@ -161,7 +155,7 @@ namespace AntiSandbox {
                 IsLowMemoryVM()) {
 
                 std::cout << TAG_ANTI() << "Kurt Cobain detected VM during monitoring\n";
-                ShowAutoClosePopup();
+                AntiKill::TriggerAntiCheat("Virtual machine detected during monitoring");
                 return;
             }
         }
@@ -175,4 +169,4 @@ namespace AntiSandbox {
             }, nullptr, 0, nullptr);
     }
 
-} // namespace AntiSandbox
+}

@@ -24,6 +24,17 @@ namespace CampusLogging {
     public:
         TeeBuf() { InitializeCriticalSection(&cs_); }
 
+        ~TeeBuf() {
+            if (hFile_ != INVALID_HANDLE_VALUE) {
+                FlushFileBuffers(hFile_);
+                CloseHandle(hFile_);
+            }
+            if (hConsole_ != INVALID_HANDLE_VALUE) {
+                CloseHandle(hConsole_);
+            }
+            DeleteCriticalSection(&cs_);
+        }
+
         bool Open(const std::string& path) {
             hConsole_ = CreateFileA("CONOUT$",
                 GENERIC_WRITE,
@@ -181,6 +192,14 @@ namespace CampusLogging {
 
         g_tee = tee;
         std::cout.rdbuf(g_tee);
+    }
+
+    // FIXED: Cleanup function to prevent memory leak
+    static void Shutdown() {
+        if (g_tee) {
+            delete g_tee;
+            g_tee = nullptr;
+        }
     }
 
 } // namespace CampusLogging

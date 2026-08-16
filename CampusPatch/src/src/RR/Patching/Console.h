@@ -20,6 +20,7 @@
 #define CLR_VIOLET  "\x1b[38;5;141m"
 #define CLR_BOLD    "\x1b[1m"
 #define CLR_ERR     "\x1b[1m\x1b[38;5;196m"
+#define CLR_WHITE   "\x1b[38;5;255m"
 
 inline std::string GetStatusTime() {
     auto now = std::chrono::system_clock::now();
@@ -34,7 +35,7 @@ inline std::string GetStatusTime() {
     return oss.str();
 }
 
-// Log Tags - simple strings without the << operator
+// Log Tags with better formatting
 #define TAG_NET()     (CLR_DIM "[" + GetStatusTime() + "] " CLR_CYAN "[NET]     " CLR_RESET)
 #define TAG_HTTP()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_CYAN "[HTTP]    " CLR_RESET)
 #define TAG_PATCH()   (CLR_DIM "[" + GetStatusTime() + "] " CLR_GREEN "[PATCH]   " CLR_RESET)
@@ -42,8 +43,9 @@ inline std::string GetStatusTime() {
 #define TAG_TLS()     (CLR_DIM "[" + GetStatusTime() + "] " CLR_YELLOW "[TLS]     " CLR_RESET)
 #define TAG_UI()      (CLR_DIM "[" + GetStatusTime() + "] " CLR_VIOLET "[UI]      " CLR_RESET)
 #define TAG_HILE()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_RED "[HILE]    " CLR_RESET)
-#define TAG_KURT()  (CLR_DIM "[" + GetStatusTime() + "] " CLR_BLUE "[KURT]  " CLR_RESET)
+#define TAG_IMAGES()  (CLR_DIM "[" + GetStatusTime() + "] " CLR_BLUE "[IMAGES]  " CLR_RESET)
 #define TAG_DISCORD() (CLR_DIM "[" + GetStatusTime() + "] " CLR_BLUE "[DISCORD] " CLR_RESET)
 #define TAG_ANTI()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_RED "[ANTI]    " CLR_RESET)
 #define TAG_WARN()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_ORANGE "[WARN]    " CLR_RESET)
 #define TAG_INIT()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_BOLD CLR_GREEN "[INIT]    " CLR_RESET)
+#define TAG_INFO()    (CLR_DIM "[" + GetStatusTime() + "] " CLR_WHITE "[INFO]    " CLR_RESET)

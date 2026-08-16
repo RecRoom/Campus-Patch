@@ -4,6 +4,7 @@
 #include <vector>
 #include <iostream>
 #include "../RR/Patching/Console.h"
+#include "AntiKill.h"
 
 namespace AntiTamper {
 
@@ -30,20 +31,6 @@ namespace AntiTamper {
         return true;
     }
 
-    static void ShowAutoClosePopup() {
-        MessageBoxA(
-            NULL,
-            "Kurt Cobain says: Integrity check failed.\n\n"
-            "The Campus Patch has been modified.\n\n"
-            "This window will close automatically.",
-            "Kurt Cobain's Drug Problem",
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
-        );
-
-        Sleep(3000);
-        TerminateProcess(GetCurrentProcess(), 1);
-    }
-
     static bool VerifyIntegrity() {
         HMODULE hModule = GetModuleHandleA("CampusPatch.dll");
         if (!hModule) {
@@ -58,17 +45,14 @@ namespace AntiTamper {
             return true;
         }
 
-        // Calculate checksum of the current DLL in memory
         uint32_t checksum = CalculateChecksum(base, size);
 
-        // Store the checksum in a static variable so it's consistent for this session
         static uint32_t sessionChecksum = checksum;
 
-        // Compare against the session checksum
         if (checksum != sessionChecksum) {
             std::cout << TAG_ANTI() << "Kurt Cobain says: Integrity check failed! DLL has been modified.\n";
             std::cout << TAG_ANTI() << "Kurt Cobain says: Expected: 0x" << std::hex << sessionChecksum << " Got: 0x" << checksum << std::dec << "\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Integrity check failed - DLL has been modified");
             return false;
         }
 
@@ -76,7 +60,6 @@ namespace AntiTamper {
         return true;
     }
 
-    // Calculate and print the checksum (for debugging/informational purposes)
     static void PrintChecksum() {
         HMODULE hModule = GetModuleHandleA("CampusPatch.dll");
         if (!hModule) {
@@ -99,4 +82,4 @@ namespace AntiTamper {
         return true;
     }
 
-} // namespace AntiTamper
+}

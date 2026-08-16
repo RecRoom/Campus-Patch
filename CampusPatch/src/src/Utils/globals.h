@@ -54,15 +54,11 @@ void set(void* obj, std::ptrdiff_t offset, T val) {
     *(T*)((std::uint8_t*)obj + offset) = val;
 }
 
-// ReadIl2CppString: wchar_t* to char* conversion.
-// NOTE: il2cppString->Length reads the klass pointer's low 32 bits instead of
-// the real length, but wcstombs_s stops at null terminator regardless of count.
-// A "corrected" version reading length from +16 broke Photon connect - URLs
-// were rejected and ns.rec.net->gameauth rewrite failed.
-
-char* ReadIl2CppString(Il2cppString* il2cppString) {
-    if (il2cppString == nullptr) {
-        return nullptr;
+// FIXED: ReadIl2CppStringOwned - safely reads IL2CPP string
+// The raw ReadIl2CppString has been removed to prevent memory leaks
+inline std::string ReadIl2CppStringOwned(Il2cppString* il2cppString) {
+    if (!il2cppString) {
+        return {};
     }
 
     size_t length = static_cast<size_t>(il2cppString->Length);
@@ -75,20 +71,10 @@ char* ReadIl2CppString(Il2cppString* il2cppString) {
 
     if (result != 0) {
         delete[] internalString;
-        return nullptr;
+        return {};
     }
 
-    return internalString;
-}
-
-// Owning wrapper: reads IL2CPP string, copies to std::string, frees buffer.
-// Use this from hot paths (SendRequest_H, log lines) to avoid leaks.
-
-#include <string>
-inline std::string ReadIl2CppStringOwned(Il2cppString* il2cppString) {
-    char* raw = ReadIl2CppString(il2cppString);
-    if (!raw) return {};
-    std::string out(raw);
-    delete[] raw;
+    std::string out(internalString);
+    delete[] internalString;
     return out;
 }

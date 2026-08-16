@@ -4,92 +4,229 @@
 #include <set>
 #include <string>
 #include <iostream>
+#include <vector>
+#include <algorithm>
+#include <tlhelp32.h>
+#include <psapi.h>
+#include <shlwapi.h>
+#include <mutex>
+#include <map>
 #include "../RR/Patching/Console.h"
+#include "AntiKill.h"
+
+#pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "shlwapi.lib")
 
 namespace AntiInjection {
+
+    static bool g_installed = false;
 
     static const std::set<std::string> kAllowedDLLs = {
         "GameAssembly.dll",
         "UnityPlayer.dll",
         "Referee.dll",
-        "kernel32.dll",
-        "user32.dll",
-        "ntdll.dll",
-        "CampusPatch.dll"
+        "CampusPatch.dll",
+        "steam_api64.dll",
+        "steamclient64.dll",
+        "discord_game_sdk.dll",
+        "audioplugindissonance.dll",
+        "gameoverlayrenderer64.dll",
+        "tier0_s64.dll",
+        "vstdlib_s64.dll"
     };
 
-    static bool IsDLLAllowed(const std::string& dllName) {
-        for (const auto& allowed : kAllowedDLLs) {
-            if (dllName.find(allowed) != std::string::npos) {
-                return true;
+    static const std::vector<std::string> kBlacklistedDLLs = {
+        "extremeinjector",
+        "xenos",
+        "dllinject",
+        "sinject",
+        "sharpinject",
+        "injector",
+        "cheatengine"
+    };
+
+    static std::set<std::string> GetLoadedDLLs() {
+        std::set<std::string> result;
+
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+        if (hSnapshot == INVALID_HANDLE_VALUE) {
+            return result;
+        }
+
+        MODULEENTRY32 me32;
+        me32.dwSize = sizeof(MODULEENTRY32);
+
+        if (Module32First(hSnapshot, &me32)) {
+            do {
+                std::string dllName = me32.szModule;
+                std::transform(dllName.begin(), dllName.end(), dllName.begin(), ::tolower);
+                if (!dllName.empty()) {
+                    result.insert(dllName);
+                }
+            } while (Module32Next(hSnapshot, &me32));
+        }
+
+        CloseHandle(hSnapshot);
+        return result;
+    }
+
+    static bool GetLoadedDLLsRaw(std::string* dllNames, size_t maxCount, size_t& count) {
+        count = 0;
+        HANDLE hSnapshot = INVALID_HANDLE_VALUE;
+        bool success = false;
+
+        __try {
+            hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+            if (hSnapshot != INVALID_HANDLE_VALUE) {
+                MODULEENTRY32 me32;
+                me32.dwSize = sizeof(MODULEENTRY32);
+
+                if (Module32First(hSnapshot, &me32)) {
+                    do {
+                        if (count < maxCount) {
+                            dllNames[count] = me32.szModule;
+                            count++;
+                        }
+                        else {
+                            break;
+                        }
+                    } while (Module32Next(hSnapshot, &me32));
+                }
+                success = true;
             }
         }
-        return false;
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            success = false;
+        }
+
+        if (hSnapshot != INVALID_HANDLE_VALUE) {
+            CloseHandle(hSnapshot);
+        }
+
+        return success;
     }
 
-    static void ShowAutoClosePopup(const std::string& dllName) {
-        std::string message = "Kurt Cobain says: An unauthorized DLL was detected.\n\n";
-        message += "DLL: " + dllName + "\n";
-        message += "Campus doesn't allow Unauthorized DLLs.\n\n";
-        message += "This window will close automatically.";
+    static DWORD WINAPI DLLScannerThread(LPVOID) {
+        Sleep(60000);
 
-        MessageBoxA(
-            NULL,
-            message.c_str(),
-            "Kurt Cobain's Drug Problem",
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
-        );
+        std::cout << TAG_ANTI() << "DLL Scanner thread started\n";
+        std::cout << TAG_ANTI() << "Checking for cheat/injector DLLs and .tmp files\n";
 
-        Sleep(3000);
-        TerminateProcess(GetCurrentProcess(), 1);
-    }
+        std::set<std::string> loadedDLLs;
+        int scanCount = 0;
 
-    static HMODULE WINAPI LoadLibraryHook(LPCSTR lpLibFileName) {
-        std::string dllName = lpLibFileName;
-
-        size_t slash = dllName.find_last_of("\\/");
-        if (slash != std::string::npos) {
-            dllName = dllName.substr(slash + 1);
+        {
+            std::string rawDLLs[512];
+            size_t count = 0;
+            if (GetLoadedDLLsRaw(rawDLLs, 512, count)) {
+                for (size_t i = 0; i < count; i++) {
+                    std::string dll = rawDLLs[i];
+                    std::transform(dll.begin(), dll.end(), dll.begin(), ::tolower);
+                    loadedDLLs.insert(dll);
+                }
+            }
         }
 
-        if (!IsDLLAllowed(dllName)) {
-            std::cout << TAG_ANTI() << "Kurt Cobain blocked unauthorized DLL: " << dllName << "\n";
-            ShowAutoClosePopup(dllName);
-            return NULL;
+        while (true) {
+            Sleep(3000);
+
+            std::string rawDLLs[512];
+            size_t count = 0;
+
+            if (!GetLoadedDLLsRaw(rawDLLs, 512, count)) {
+                std::cout << TAG_ANTI() << "Scan exception, skipping cycle\n";
+                continue;
+            }
+
+            std::set<std::string> currentDLLs;
+            for (size_t i = 0; i < count; i++) {
+                std::string dll = rawDLLs[i];
+                std::transform(dll.begin(), dll.end(), dll.begin(), ::tolower);
+                if (!dll.empty()) {
+                    currentDLLs.insert(dll);
+                }
+            }
+
+            for (const auto& dll : currentDLLs) {
+                if (loadedDLLs.find(dll) != loadedDLLs.end() || dll.empty()) {
+                    continue;
+                }
+
+                std::cout << TAG_ANTI() << "NEW DLL DETECTED: " << dll << "\n";
+
+                bool isAllowed = false;
+                for (const auto& allowed : kAllowedDLLs) {
+                    std::string lowerAllowed = allowed;
+                    std::transform(lowerAllowed.begin(), lowerAllowed.end(), lowerAllowed.begin(), ::tolower);
+                    if (dll == lowerAllowed) {
+                        isAllowed = true;
+                        break;
+                    }
+                }
+
+                if (isAllowed) {
+                    std::cout << TAG_ANTI() << "IGNORING " << dll << " (allowed)\n";
+                    continue;
+                }
+
+                if (dll.find(".tmp") != std::string::npos) {
+                    std::cout << TAG_ANTI() << "[!] .tmp DLL DETECTED: " << dll << "\n";
+                    AntiKill::TriggerAntiCheat("Suspicious .tmp DLL loaded: " + dll);
+                    return 0;
+                }
+
+                bool isBlacklisted = false;
+                for (const auto& bad : kBlacklistedDLLs) {
+                    if (dll.find(bad) != std::string::npos) {
+                        isBlacklisted = true;
+                        break;
+                    }
+                }
+
+                if (isBlacklisted) {
+                    std::cout << TAG_ANTI() << "[!] BLACKLISTED DLL: " << dll << "\n";
+                    AntiKill::TriggerAntiCheat("Unauthorized DLL loaded: " + dll);
+                    return 0;
+                }
+
+                std::cout << TAG_ANTI() << "IGNORING " << dll << " (safe)\n";
+            }
+
+            loadedDLLs = currentDLLs;
+            scanCount++;
+            if (scanCount % 10 == 0) {
+                std::cout << TAG_ANTI() << "Scan #" << scanCount << " - " << loadedDLLs.size() << " loaded\n";
+            }
         }
 
-        return LoadLibraryA(lpLibFileName);
-    }
-
-    static HMODULE WINAPI LoadLibraryWHook(LPCWSTR lpLibFileName) {
-        char dllName[MAX_PATH];
-        WideCharToMultiByte(CP_ACP, 0, lpLibFileName, -1, dllName, MAX_PATH, NULL, NULL);
-
-        std::string dllNameStr = dllName;
-
-        size_t slash = dllNameStr.find_last_of("\\/");
-        if (slash != std::string::npos) {
-            dllNameStr = dllNameStr.substr(slash + 1);
-        }
-
-        if (!IsDLLAllowed(dllNameStr)) {
-            std::cout << TAG_ANTI() << "Kurt Cobain blocked unauthorized DLL (W): " << dllNameStr << "\n";
-            ShowAutoClosePopup(dllNameStr);
-            return NULL;
-        }
-
-        return LoadLibraryW(lpLibFileName);
+        return 0;
     }
 
     static void Install() {
+        if (g_installed) {
+            return;
+        }
+        g_installed = true;
+
         std::cout << TAG_ANTI() << "Kurt Cobain is installing anti-injection protections...\n";
         std::cout << TAG_ANTI() << "Allowed DLLs: ";
         for (const auto& dll : kAllowedDLLs) {
             std::cout << dll << " ";
         }
         std::cout << "\n";
+        std::cout << TAG_ANTI() << "Checking for: cheat/injector DLLs, .tmp files\n";
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-injection protections installed.\n";
+        HANDLE hThread = CreateThread(NULL, 0, DLLScannerThread, NULL, 0, NULL);
+        if (hThread) {
+            CloseHandle(hThread);
+            std::cout << TAG_ANTI() << "Started DLL scanner thread\n";
+        }
+        else {
+            std::cout << TAG_ANTI() << "Failed to start DLL scanner thread\n";
+        }
+
+        std::cout << TAG_ANTI() << "Exception handler: DISABLED (prevents crashes)\n";
+        std::cout << TAG_ANTI() << "Anti-injection protections installed.\n";
     }
 
-} // namespace AntiInjection
+}

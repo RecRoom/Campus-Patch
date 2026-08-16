@@ -3,66 +3,30 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <tlhelp32.h>
 #include <iostream>
+#include <thread>
+#include <chrono>
 #include "../RR/Patching/Console.h"
+#include "AntiKill.h"  // This now has the forward declaration
 
 namespace AntiDebug {
 
-    // List of process names to detect (HTTP debuggers, cheat tools, etc.)
     static const std::vector<std::string> kBlacklistedProcesses = {
-        // HTTP Debuggers / Proxies
-        "HTTPDebugger",
-        "HTTPDebuggerUI",
-        "HTTPDebuggerSvc",
-        "Fiddler",
-        "FiddlerEverywhere",
-        "Charles",
-        "BurpSuite",
-        "Wireshark",
-        "Tcpdump",
-        "HTTPTool",
-        "Proxifier",
-        "SocksCap",
-        "ProxyCap",
-
-        // Cheat Tools
-        "CheatEngine",
-        "cheatengine-x86_64",
-        "DBG",
-        "x64dbg",
-        "x32dbg",
-        "OllyDbg",
-        "IDA",
-        "ida64",
-        "Radare2",
-        "Ghidra",
-
-        // Memory Editors
-        "ArtMoney",
-        "ScanMem",
-        "MHS",
-        "TSearch",
-
-        // DLL Injectors
-        "ExtremeInjector",
-        "Xenos",
-        "Injector",
-        "DLLInject",
-
-        // Other
-        "ProcessHacker",
-        "ProcessMonitor",
-        "API Monitor",
-        "WinDbg",
-        "Sysinternals"
+        "HTTPDebugger", "HTTPDebuggerUI", "HTTPDebuggerSvc",
+        "Fiddler", "FiddlerEverywhere", "Charles", "BurpSuite",
+        "Wireshark", "Tcpdump", "HTTPTool", "Proxifier",
+        "CheatEngine", "cheatengine-x86_64", "DBG", "x64dbg",
+        "x32dbg", "OllyDbg", "IDA", "ida64", "Radare2", "Ghidra",
+        "ArtMoney", "ScanMem", "MHS", "TSearch",
+        "ExtremeInjector", "Xenos", "Injector", "DLLInject",
+        "ProcessHacker", "ProcessMonitor", "API Monitor", "WinDbg"
     };
 
     static bool IsProcessRunning(const std::string& processName) {
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (hSnapshot == INVALID_HANDLE_VALUE) {
-            return false;
-        }
+        if (hSnapshot == INVALID_HANDLE_VALUE) return false;
 
         PROCESSENTRY32 pe32;
         pe32.dwSize = sizeof(PROCESSENTRY32);
@@ -70,7 +34,13 @@ namespace AntiDebug {
         if (Process32First(hSnapshot, &pe32)) {
             do {
                 std::string currentProcess = pe32.szExeFile;
-                if (currentProcess.find(processName) != std::string::npos) {
+                std::transform(currentProcess.begin(), currentProcess.end(),
+                    currentProcess.begin(), ::tolower);
+                std::string searchName = processName;
+                std::transform(searchName.begin(), searchName.end(),
+                    searchName.begin(), ::tolower);
+
+                if (currentProcess.find(searchName) != std::string::npos) {
                     CloseHandle(hSnapshot);
                     return true;
                 }
@@ -81,30 +51,13 @@ namespace AntiDebug {
         return false;
     }
 
-    static void ShowAutoClosePopup(const std::string& processName) {
-        std::string message = "Kurt Cobain says: An unauthorized application was detected.\n\n";
-        message += "Process: " + processName + "\n";
-        message += "Campus doesn't allow unauthorized applications.\n\n";
-        message += "This window will close automatically.";
-
-        MessageBoxA(
-            NULL,
-            message.c_str(),
-            "Kurt Cobain's Drug Problem",
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
-        );
-
-        Sleep(3000);
-        TerminateProcess(GetCurrentProcess(), 1);
-    }
-
     static bool PerformAntiDebugCheck() {
         std::cout << TAG_ANTI() << "Kurt Cobain is running anti-debug checks...\n";
 
         for (const auto& process : kBlacklistedProcesses) {
             if (IsProcessRunning(process)) {
                 std::cout << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
-                ShowAutoClosePopup(process);
+                AntiKill::TriggerAntiCheat("Unauthorized application detected: " + process);
                 return false;
             }
         }
@@ -114,13 +67,15 @@ namespace AntiDebug {
     }
 
     static void AntiDebugThread() {
+        Sleep(20000);
+
         while (true) {
-            Sleep(5000);
+            Sleep(10000);
 
             for (const auto& process : kBlacklistedProcesses) {
                 if (IsProcessRunning(process)) {
                     std::cout << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
-                    ShowAutoClosePopup(process);
+                    AntiKill::TriggerAntiCheat("Unauthorized application detected during monitoring: " + process);
                     return;
                 }
             }
@@ -129,10 +84,11 @@ namespace AntiDebug {
 
     static void StartAntiDebugMonitoring() {
         std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-debug monitoring...\n";
+        std::cout << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiDebugThread();
             return 0;
             }, nullptr, 0, nullptr);
     }
 
-} // namespace AntiDebug
+}

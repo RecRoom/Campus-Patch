@@ -4,8 +4,10 @@
 #include <psapi.h>
 #include <iostream>
 #include <string>
+#include <algorithm>
 #include <tlhelp32.h>
 #include "../RR/Patching/Console.h"
+#include "AntiKill.h"  // This now has the forward declaration
 
 #pragma comment(lib, "psapi.lib")
 
@@ -99,6 +101,7 @@ namespace AntiDebugger {
                         DWORD size = MAX_PATH;
                         if (QueryFullProcessImageNameA(hParent, 0, name, &size)) {
                             std::string parentName = name;
+                            std::transform(parentName.begin(), parentName.end(), parentName.begin(), ::tolower);
                             CloseHandle(hParent);
 
                             if (parentName.find("debug") != std::string::npos ||
@@ -154,50 +157,36 @@ namespace AntiDebugger {
         return false;
     }
 
-    static void ShowAutoClosePopup() {
-        MessageBoxA(
-            NULL,
-            "Kurt Cobain says: An unauthorized application was detected.\n\n"
-            "Campus doesn't allow Debuggers.\n\n"
-            "This window will close automatically.",
-            "Kurt Cobain's Drug Problem",
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
-        );
-
-        Sleep(3000);
-        TerminateProcess(GetCurrentProcess(), 1);
-    }
-
     static bool PerformAntiDebugChecks() {
         std::cout << TAG_ANTI() << "Kurt Cobain is running anti-debugger checks...\n";
 
         if (IsDebuggerAttached()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (IsDebuggerPresent)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Debugger detected: IsDebuggerPresent");
             return false;
         }
 
         if (IsRemoteDebuggerAttached()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (PEB flags)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Debugger detected: PEB flags");
             return false;
         }
 
         if (HasHardwareBreakpoints()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected hardware breakpoints\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Hardware breakpoints detected");
             return false;
         }
 
         if (IsParentProcessDebugger()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected debugger parent process\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Debugger parent process detected");
             return false;
         }
 
         if (IsDebuggedViaNtQuery()) {
             std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (NtQueryInformationProcess)\n";
-            ShowAutoClosePopup();
+            AntiKill::TriggerAntiCheat("Debugger detected: NtQueryInformationProcess");
             return false;
         }
 
@@ -206,8 +195,10 @@ namespace AntiDebugger {
     }
 
     static void AntiDebuggerThread() {
+        Sleep(20000);
+
         while (true) {
-            Sleep(5000);
+            Sleep(10000);
 
             if (IsDebuggerAttached() ||
                 IsRemoteDebuggerAttached() ||
@@ -216,7 +207,7 @@ namespace AntiDebugger {
                 IsDebuggedViaNtQuery()) {
 
                 std::cout << TAG_ANTI() << "Kurt Cobain detected debugger during monitoring\n";
-                ShowAutoClosePopup();
+                AntiKill::TriggerAntiCheat("Debugger detected during monitoring");
                 return;
             }
         }
@@ -224,10 +215,11 @@ namespace AntiDebugger {
 
     static void StartMonitoring() {
         std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-debugger monitoring...\n";
+        std::cout << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiDebuggerThread();
             return 0;
             }, nullptr, 0, nullptr);
     }
 
-} // namespace AntiDebugger
+}

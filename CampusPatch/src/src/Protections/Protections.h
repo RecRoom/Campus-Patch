@@ -5,70 +5,86 @@
 #include "AntiInjection.h"
 #include "AntiSandbox.h"
 #include "AntiTamper.h"
+#include "AntiKill.h"
+#include "AntiHook.h"
+#include "../Utils/logging.h"
+#include "../Discord/DiscordRPC_Presence.h"
 
 namespace Protections {
     inline void Initialize() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is doing Crack right now\n";
-        std::cout << TAG_ANTI() << "[#######################################]\n";
-        std::cout << TAG_ANTI() << "  FUCK YOU, NEVERMIND\n";
-        std::cout << TAG_ANTI() << "[#######################################]\n";
+        std::cout << "\n";
+        std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
+        std::cout << "  " << CLR_RED << "\t\tKURT COBAIN'S ANTI-CHEAT SYSTEM" << CLR_RESET << "\n";
+        std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
 
-        // 1. Anti-Debug (process scanner)
-        std::cout << TAG_ANTI() << "[1/5] Kurt Cobain is running anti-debug checks...\n";
-        if (!AntiDebug::PerformAntiDebugCheck()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-debug check failed!\n";
-            return;
+        // 1. Anti-Debug
+        std::cout << "| [1/6] Anti-Debug     ";
+        if (AntiDebug::PerformAntiDebugCheck()) {
+            std::cout << CLR_GREEN << "[PASSED]" << CLR_RESET;
         }
-        std::cout << TAG_ANTI() << "[1/5] Kurt Cobain says: Anti-debug checks passed.\n";
-
-        // 2. Anti-Debugger (system checks)
-        std::cout << TAG_ANTI() << "[2/5] Kurt Cobain is running anti-debugger checks...\n";
-        if (!AntiDebugger::PerformAntiDebugChecks()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-debugger check failed!\n";
-            return;
+        else {
+            std::cout << CLR_RED << "[FAILED]" << CLR_RESET;
         }
-        std::cout << TAG_ANTI() << "[2/5] Kurt Cobain says: Anti-debugger checks passed.\n";
+        std::cout << "                                             |\n";
 
-        // 3. Anti-Sandbox (VM detection)
-        std::cout << TAG_ANTI() << "[3/5] Kurt Cobain is running anti-sandbox checks...\n";
-        if (!AntiSandbox::PerformAntiSandboxChecks()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-sandbox check failed!\n";
-            return;
+        // 2. Anti-Debugger
+        std::cout << "| [2/6] Anti-Debugger  ";
+        if (AntiDebugger::PerformAntiDebugChecks()) {
+            std::cout << CLR_GREEN << "[PASSED]" << CLR_RESET;
         }
-        std::cout << TAG_ANTI() << "[3/5] Kurt Cobain says: Anti-sandbox checks passed.\n";
-
-        // 4. Anti-Tamper (integrity checks)
-        std::cout << TAG_ANTI() << "[4/5] Kurt Cobain is running anti-tamper checks...\n";
-        if (!AntiTamper::VerifyIntegrity()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-tamper check failed!\n";
-            return;
+        else {
+            std::cout << CLR_RED << "[FAILED]" << CLR_RESET;
         }
-        std::cout << TAG_ANTI() << "[4/5] Kurt Cobain says: Anti-tamper checks passed.\n";
+        std::cout << "                                             |\n";
 
-        // 5. Anti-Injection (DLL blocking)
-        std::cout << TAG_ANTI() << "[5/5] Kurt Cobain is installing anti-injection protections...\n";
-        AntiInjection::Install();
-        std::cout << TAG_ANTI() << "[5/5] Kurt Cobain says: Anti-injection protections installed.\n";
+        // 3. Anti-Sandbox
+        std::cout << "| [3/6] Anti-Sandbox   ";
+        if (AntiSandbox::PerformAntiSandboxChecks()) {
+            std::cout << CLR_GREEN << "[PASSED]" << CLR_RESET;
+        }
+        else {
+            std::cout << CLR_RED << "[FAILED]" << CLR_RESET;
+        }
+        std::cout << "                                             |\n";
 
-        // Start continuous monitoring threads
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting monitoring threads...\n";
+        // 4. Anti-Tamper
+        std::cout << "| [4/6] Anti-Tamper    ";
+        if (AntiTamper::VerifyIntegrity()) {
+            std::cout << CLR_GREEN << "[PASSED]" << CLR_RESET;
+        }
+        else {
+            std::cout << CLR_RED << "[FAILED]" << CLR_RESET;
+        }
+        std::cout << "                                             |\n";
+
+        // 5. Anti-Injection - DISABLED (causes crashes/deadlocks)
+        std::cout << "| [5/6] Anti-Injection ";
+        // AntiInjection::Install();  // DISABLED - AntiKill already covers this
+        std::cout << CLR_YELLOW << "[DISABLED]" << CLR_RESET;
+        std::cout << "                                          |\n";
+
+        // 6. Anti-Cheat
+        std::cout << "| [6/6] Anti-Cheat     ";
+        AntiKill::Initialize();
+        std::cout << CLR_GREEN << "[ACTIVE]" << CLR_RESET;
+        std::cout << "                                             |\n";
+
+        std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
+        std::cout << "  \tStatus: " << CLR_GREEN << "Why do you think its called Niggas in Paris" << CLR_RESET << "\n";
+        std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
+        std::cout << "\n";
+
         AntiDebug::StartAntiDebugMonitoring();
         AntiDebugger::StartMonitoring();
         AntiSandbox::StartMonitoring();
-
-        std::cout << TAG_ANTI() << "[#######################################]\n";
-        std::cout << TAG_ANTI() << "  Fucking Protections worked\n";
-        std::cout << TAG_ANTI() << "[#######################################]\n";
-        std::cout << TAG_ANTI() << "  Anti-Debug:     ACTIVE\n";
-        std::cout << TAG_ANTI() << "  Anti-Debugger:  ACTIVE\n";
-        std::cout << TAG_ANTI() << "  Anti-Sandbox:   ACTIVE\n";
-        std::cout << TAG_ANTI() << "  Anti-Tamper:    ACTIVE\n";
-        std::cout << TAG_ANTI() << "  Anti-Injection: ACTIVE\n";
-        std::cout << TAG_ANTI() << "[#######################################]\n";
-        std::cout << TAG_ANTI() << "Kurt Cobain's Drug Problem is getting out of Hand\n";
     }
 
     inline void Shutdown() {
         std::cout << TAG_ANTI() << "Kurt Cobain is shutting down protections...\n";
+
+        AntiHook::Shutdown();
+        DiscordRPC::Shutdown();
+
+        CampusLogging::Shutdown();
     }
 }

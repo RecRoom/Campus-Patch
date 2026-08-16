@@ -20,3 +20,4 @@
 #include "SendRequest.h"
 #include "UIGradient.h"
 #include "PatchInstaller.h"
+#include "RadioPatch.h"
