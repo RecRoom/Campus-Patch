@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -158,39 +159,39 @@ namespace AntiDebugger {
     }
 
     static bool PerformAntiDebugChecks() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is running anti-debugger checks...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is running anti-debugger checks...\n";
 
         if (IsDebuggerAttached()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (IsDebuggerPresent)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected debugger (IsDebuggerPresent)\n";
             AntiKill::TriggerAntiCheat("Debugger detected: IsDebuggerPresent");
             return false;
         }
 
         if (IsRemoteDebuggerAttached()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (PEB flags)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected debugger (PEB flags)\n";
             AntiKill::TriggerAntiCheat("Debugger detected: PEB flags");
             return false;
         }
 
         if (HasHardwareBreakpoints()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected hardware breakpoints\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected hardware breakpoints\n";
             AntiKill::TriggerAntiCheat("Hardware breakpoints detected");
             return false;
         }
 
         if (IsParentProcessDebugger()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger parent process\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected debugger parent process\n";
             AntiKill::TriggerAntiCheat("Debugger parent process detected");
             return false;
         }
 
         if (IsDebuggedViaNtQuery()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected debugger (NtQueryInformationProcess)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected debugger (NtQueryInformationProcess)\n";
             AntiKill::TriggerAntiCheat("Debugger detected: NtQueryInformationProcess");
             return false;
         }
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-debugger checks passed.\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: Anti-debugger checks passed.\n";
         return true;
     }
 
@@ -206,7 +207,7 @@ namespace AntiDebugger {
                 IsParentProcessDebugger() ||
                 IsDebuggedViaNtQuery()) {
 
-                std::cout << TAG_ANTI() << "Kurt Cobain detected debugger during monitoring\n";
+                Protections::log << TAG_ANTI() << "Kurt Cobain detected debugger during monitoring\n";
                 AntiKill::TriggerAntiCheat("Debugger detected during monitoring");
                 return;
             }
@@ -214,8 +215,8 @@ namespace AntiDebugger {
     }
 
     static void StartMonitoring() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-debugger monitoring...\n";
-        std::cout << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is starting anti-debugger monitoring...\n";
+        Protections::log << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiDebuggerThread();
             return 0;

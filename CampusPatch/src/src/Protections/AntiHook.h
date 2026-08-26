@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <set>
@@ -80,7 +81,6 @@ namespace RR {
 
         namespace ImageSignature {
             extern uint32_t Outer;
-            extern uint32_t Verifier;
         }
     }
 }
@@ -122,13 +122,12 @@ namespace AntiHook {
         g_allowedOffsets.insert(RR::Methods::RecNetImages::LoadBytes);
         g_allowedOffsets.insert(RR::Methods::RecNetImages::StaticConstructor);
         g_allowedOffsets.insert((uintptr_t)RR::Methods::ImageSignature::Outer);
-        g_allowedOffsets.insert((uintptr_t)RR::Methods::ImageSignature::Verifier);
         g_allowedOffsets.insert(RR::Methods::Referee::Check1);
         g_allowedOffsets.insert(RR::Methods::Referee::Check2);
         g_allowedOffsets.insert(RR::Methods::Referee::Check3);
         g_allowedOffsets.insert(RR::Methods::Referee::Check4);
 
-        std::cout << TAG_ANTI() << "[HookProtection] Loaded " << g_allowedOffsets.size() << " allowed offsets\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Loaded " << g_allowedOffsets.size() << " allowed offsets\n";
     }
 
     static bool GetModuleInfo(HMODULE hModule, uintptr_t& base, size_t& size) {
@@ -200,7 +199,7 @@ namespace AntiHook {
     }
 
     static bool ScanAllFunctionsForHooks() {
-        std::cout << TAG_ANTI() << "[HookProtection] Scanning all allowed functions for hooks...\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Scanning all allowed functions for hooks...\n";
 
         bool allClean = true;
 
@@ -224,9 +223,9 @@ namespace AntiHook {
                         continue;
                     }
 
-                    std::cout << TAG_ANTI() << "[!] UNAUTHORIZED HOOK DETECTED in GameAssembly!\n";
-                    std::cout << TAG_ANTI() << "[!] Offset: 0x" << std::hex << offset << std::dec << "\n";
-                    std::cout << TAG_ANTI() << "[!] Hook bytes: ";
+                    Protections::log << TAG_ANTI() << "[!] UNAUTHORIZED HOOK DETECTED in GameAssembly!\n";
+                    Protections::log << TAG_ANTI() << "[!] Offset: 0x" << std::hex << offset << std::dec << "\n";
+                    Protections::log << TAG_ANTI() << "[!] Hook bytes: ";
                     for (size_t i = 0; i < hookSize && i < 16; i++) {
                         std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)bytes[i] << " ";
                     }
@@ -240,7 +239,7 @@ namespace AntiHook {
         }
 
         if (allClean) {
-            std::cout << TAG_ANTI() << "[HookProtection] All functions clean - no unauthorized hooks\n";
+            Protections::log << TAG_ANTI() << "[HookProtection] All functions clean - no unauthorized hooks\n";
         }
 
         return allClean;
@@ -249,8 +248,8 @@ namespace AntiHook {
     static DWORD WINAPI HookScannerThread(LPVOID) {
         Sleep(15000);
 
-        std::cout << TAG_ANTI() << "[HookProtection] Hook scanner thread started\n";
-        std::cout << TAG_ANTI() << "[HookProtection] Monitoring for unauthorized hooks...\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Hook scanner thread started\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Monitoring for unauthorized hooks...\n";
 
         while (true) {
             Sleep(5000);
@@ -269,18 +268,18 @@ namespace AntiHook {
         }
         g_initialized = true;
 
-        std::cout << TAG_ANTI() << "[HookProtection] Initializing anti-hook protection...\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Initializing anti-hook protection...\n";
 
         g_gameAssembly = GetModuleHandleA("GameAssembly.dll");
         g_referee = GetModuleHandleA("Referee.dll");
 
         if (!g_gameAssembly) {
-            std::cout << TAG_ANTI() << "[HookProtection] GameAssembly.dll not loaded!\n";
+            Protections::log << TAG_ANTI() << "[HookProtection] GameAssembly.dll not loaded!\n";
             return;
         }
 
         if (!GetModuleInfo(g_gameAssembly, g_gameAssemblyBase, g_gameAssemblySize)) {
-            std::cout << TAG_ANTI() << "[HookProtection] Failed to get GameAssembly info!\n";
+            Protections::log << TAG_ANTI() << "[HookProtection] Failed to get GameAssembly info!\n";
             return;
         }
 
@@ -288,28 +287,28 @@ namespace AntiHook {
             GetModuleInfo(g_referee, g_refereeBase, g_refereeSize);
         }
 
-        std::cout << TAG_ANTI() << "[HookProtection] GameAssembly: 0x" << std::hex << g_gameAssemblyBase <<
+        Protections::log << TAG_ANTI() << "[HookProtection] GameAssembly: 0x" << std::hex << g_gameAssemblyBase <<
             " - 0x" << (g_gameAssemblyBase + g_gameAssemblySize) << std::dec << "\n";
         if (g_referee) {
-            std::cout << TAG_ANTI() << "[HookProtection] Referee: 0x" << std::hex << g_refereeBase <<
+            Protections::log << TAG_ANTI() << "[HookProtection] Referee: 0x" << std::hex << g_refereeBase <<
                 " - 0x" << (g_refereeBase + g_refereeSize) << std::dec << "\n";
         }
 
         InitializeAllowedOffsets();
 
-        std::cout << TAG_ANTI() << "[HookProtection] Performing initial scan...\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Performing initial scan...\n";
         ScanAllFunctionsForHooks();
 
         HANDLE hThread = CreateThread(NULL, 0, HookScannerThread, NULL, 0, NULL);
         if (hThread) {
             CloseHandle(hThread);
-            std::cout << TAG_ANTI() << "[HookProtection] Started hook scanner thread\n";
+            Protections::log << TAG_ANTI() << "[HookProtection] Started hook scanner thread\n";
         }
         else {
-            std::cout << TAG_ANTI() << "[HookProtection] Failed to start hook scanner thread\n";
+            Protections::log << TAG_ANTI() << "[HookProtection] Failed to start hook scanner thread\n";
         }
 
-        std::cout << TAG_ANTI() << "[HookProtection] Anti-hook protection active\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Anti-hook protection active\n";
     }
 
     static bool IsAllowedHookAddress(uintptr_t address) {
@@ -332,12 +331,12 @@ namespace AntiHook {
     static void AddAllowedOffset(uintptr_t offset) {
         std::lock_guard<std::mutex> lock(g_hookMutex);
         g_allowedOffsets.insert(offset);
-        std::cout << TAG_ANTI() << "[HookProtection] Added allowed offset: 0x" << std::hex << offset << std::dec << "\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Added allowed offset: 0x" << std::hex << offset << std::dec << "\n";
     }
 
     static void Shutdown() {
         g_initialized = false;
-        std::cout << TAG_ANTI() << "[HookProtection] Shutting down...\n";
+        Protections::log << TAG_ANTI() << "[HookProtection] Shutting down...\n";
     }
 
 }

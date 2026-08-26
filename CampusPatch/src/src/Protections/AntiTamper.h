@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <vector>
@@ -34,14 +35,14 @@ namespace AntiTamper {
     static bool VerifyIntegrity() {
         HMODULE hModule = GetModuleHandleA("CampusPatch.dll");
         if (!hModule) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Could not verify integrity (module not found)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Could not verify integrity (module not found)\n";
             return true;
         }
 
         uintptr_t base;
         size_t size;
         if (!GetModuleInfo(hModule, base, size)) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Could not verify integrity (invalid module)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Could not verify integrity (invalid module)\n";
             return true;
         }
 
@@ -50,32 +51,32 @@ namespace AntiTamper {
         static uint32_t sessionChecksum = checksum;
 
         if (checksum != sessionChecksum) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Integrity check failed! DLL has been modified.\n";
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Expected: 0x" << std::hex << sessionChecksum << " Got: 0x" << checksum << std::dec << "\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Integrity check failed! DLL has been modified.\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Expected: 0x" << std::hex << sessionChecksum << " Got: 0x" << checksum << std::dec << "\n";
             AntiKill::TriggerAntiCheat("Integrity check failed - DLL has been modified");
             return false;
         }
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Integrity check passed.\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: Integrity check passed.\n";
         return true;
     }
 
     static void PrintChecksum() {
         HMODULE hModule = GetModuleHandleA("CampusPatch.dll");
         if (!hModule) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Could not get module handle\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Could not get module handle\n";
             return;
         }
 
         uintptr_t base;
         size_t size;
         if (!GetModuleInfo(hModule, base, size)) {
-            std::cout << TAG_ANTI() << "Kurt Cobain says: Could not get module info\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain says: Could not get module info\n";
             return;
         }
 
         uint32_t checksum = CalculateChecksum(base, size);
-        std::cout << TAG_ANTI() << "Kurt Cobain says: DLL Checksum = 0x" << std::hex << checksum << std::dec << "\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: DLL Checksum = 0x" << std::hex << checksum << std::dec << "\n";
     }
 
     static bool CheckForHooks() {

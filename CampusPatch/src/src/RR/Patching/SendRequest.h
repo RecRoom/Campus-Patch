@@ -1,23 +1,110 @@
 #pragma once
-
-#include <iostream>
-#include <string>
 #include "../Methods.h"
+#include "../../Utils/scan.h"
+#include "../../Utils/deps/spoofcall/RetSpoof.hpp"
 #include "Console.h"
 #include "ServerConfiguration.h"
-#include "HttpDebug.h"
 #include "RefereeBypass.h"
-#include "../../Utils/globals.h"
-#include "../../Utils/deps/spoofcall/RetSpoof.hpp"
-#include "../../Utils/Inc/Includes.h"
+#include "../../Discord/DiscordRPC_Presence.h"
+#include <cstring>
+#include <atomic>
+#include <thread>
 
-// Forward declaration — ensures Il2cppString resolves at global scope in this TU
-// even if IntelliSense/compile order doesn't pick it up from Includes.h.
-// Safe no-op if it's already fully declared upstream (this is just a forward decl).
-struct Il2cppString;
+// NOTE: nop_O and nop_H are in RefereeBypass.h - DO NOT redefine here
 
-// SendRequest Hook - Redirects ns.rec.net to gameauth.ddns.net
 void (*SendRequest_O)(void*);
+
+// ================================================================
+// IMAGE SIGNATURE HOOK - PROVEN WORKING
+// Forces the image signature verification to always return true
+// This is the SAME approach from the original working Patches.h
+// ================================================================
+bool (*VerifyImageSig_O)(void*, void*, void*) = nullptr;
+bool VerifyImageSig_H(void* data, void* sig, void* mi) {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        bool orig = false;
+        __try {
+            if (VerifyImageSig_O) orig = VerifyImageSig_O(data, sig, mi);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        std::cout << "[ImgSig] original=" << (orig ? 1 : 0) << " -> forcing TRUE\n";
+    }
+    return true;
+}
+
+// Helper: Convert wchar_t* to std::string
+static std::string WStringToString(const wchar_t* wstr, int len) {
+    if (!wstr || len <= 0) return "";
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wstr, len, nullptr, 0, nullptr, nullptr);
+    if (utf8Len <= 0) return "";
+    std::string result(utf8Len, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr, len, &result[0], utf8Len, nullptr, nullptr);
+    return result;
+}
+
+// Helper: Find substring in Il2cppString buffer
+static const wchar_t* FindSubstringInIl2cppString(Il2cppString* str, const wchar_t* find, int findLen) {
+    if (!str || !find || findLen <= 0) return nullptr;
+
+    int strLen = str->Length;
+    if (strLen < findLen) return nullptr;
+
+    const wchar_t* data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(str) + 4);
+
+    for (int i = 0; i <= strLen - findLen; i++) {
+        bool found = true;
+        for (int j = 0; j < findLen; j++) {
+            if (data[i + j] != find[j]) {
+                found = false;
+                break;
+            }
+        }
+        if (found) {
+            return data + i;
+        }
+    }
+    return nullptr;
+}
+
+// Helper: Replace substring in Il2cppString with new string
+static Il2cppString* ReplaceSubstringInIl2cppString(Il2cppString* original, const wchar_t* find, int findLen, const wchar_t* replace, int replaceLen) {
+    if (!original || !find || !replace || findLen <= 0) return nullptr;
+
+    const wchar_t* pos = FindSubstringInIl2cppString(original, find, findLen);
+    if (!pos) return nullptr;
+
+    int originalLen = original->Length;
+    const wchar_t* data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(original) + 4);
+    int offset = (int)(pos - data);
+
+    int newLen = originalLen - findLen + replaceLen;
+
+    wchar_t* newData = (wchar_t*)malloc((newLen + 1) * sizeof(wchar_t));
+    if (!newData) return nullptr;
+
+    memcpy(newData, data, offset * sizeof(wchar_t));
+    memcpy(newData + offset, replace, replaceLen * sizeof(wchar_t));
+    memcpy(newData + offset + replaceLen, data + offset + findLen, (originalLen - offset - findLen) * sizeof(wchar_t));
+    newData[newLen] = L'\0';
+
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, newData, newLen, nullptr, 0, nullptr, nullptr);
+    if (utf8Len <= 0) {
+        free(newData);
+        return nullptr;
+    }
+
+    std::string utf8Str(utf8Len, 0);
+    WideCharToMultiByte(CP_UTF8, 0, newData, newLen, &utf8Str[0], utf8Len, nullptr, nullptr);
+    free(newData);
+
+    using Il2cppStringNewFn = Il2cppString * (*)(const char*);
+    auto strNew = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
+    if (!strNew) return nullptr;
+
+    return strNew(utf8Str.c_str());
+}
 
 void SendRequest_H(void* request) {
     void* uri = read<void*>(request, 16);
@@ -25,85 +112,113 @@ void SendRequest_H(void* request) {
         return SendRequest_O(request);
     }
 
-    using ToStringFn = ::Il2cppString* (*)(void*);
+    // STEP 1: Get the string from the Uri object using ToString
+    using ToStringFn = Il2cppString * (*)(void*);
     auto toStringFn = reinterpret_cast<ToStringFn>(GA + RR::Methods::System::Uri::ToString);
-
-    ::Il2cppString* Uri = spoof_call((const void*)RetAddr, toStringFn, uri);
-    if (!Uri) {
+    if (!toStringFn) {
+        std::cout << TAG_WARN() << "ToString function is null!" << std::endl;
         return SendRequest_O(request);
     }
 
-    std::string url = ReadIl2CppStringOwned(Uri);
-    std::cout << TAG_NET() << "URI: " << url << "\n";
+    Il2cppString* UriString = spoof_call(RetAddr, toStringFn, uri);
+    if (!UriString) {
+        std::cout << TAG_WARN() << "UriString is null!" << std::endl;
+        return SendRequest_O(request);
+    }
 
-    // ============================================================
-    // Normal ns.rec.net redirect for game servers
-    // ============================================================
-    const std::string find = "ns.rec.net";
-    auto findPos = url.find(find);
+    // Read the returned string with the standard il2cpp x64 layout FIRST (length @ +16,
+    // wchar_t data @ +20 after a 16-byte klass+monitor header), then fall back to the
+    // legacy layout this codebase's Il2cppString struct declares (length @ +0, data @ +4).
+    auto readStd = [](void* s) -> std::string {
+        int32_t len = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(s) + 16);
+        if (len <= 0 || len > 4096) return "";
+        auto data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(s) + 20);
+        return WStringToString(data, len);
+        };
+    auto readLegacy = [](Il2cppString* s) -> std::string {
+        int32_t len = s->Length;
+        if (len <= 0 || len > 4096) return "";
+        auto data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(s) + 4);
+        return WStringToString(data, len);
+        };
 
-    if (findPos != std::string::npos) {
-        // Drop hile reports
-        if (url.find("/api/PlayerReporting/v1/hile") != std::string::npos ||
-            url.find("/api/PlayerReporting/v1/referee") != std::string::npos) {
-            std::cout << TAG_HILE() << "DROPPED " << CLR_DIM << url << CLR_RESET << "\n";
-            return;
-        }
+    std::string urlStr = readStd(UriString);
+    bool usedStd = !urlStr.empty();
+    if (urlStr.empty()) urlStr = readLegacy(UriString);
 
-        std::string newUrl = url;
-        newUrl.replace(findPos, find.length(), CAMPUS_NAMESERVER_HOST);
+    std::cout << TAG_NET() << "URI: " << urlStr
+        << (urlStr.empty() ? " [empty - both layouts failed]" : (usedStd ? "" : " [legacy layout]"))
+        << std::endl;
 
-        // For image URLs, remove the signature parameter
-        bool isImage = url.find("/img/") != std::string::npos ||
-            url.find(".png") != std::string::npos ||
-            url.find(".jpg") != std::string::npos ||
-            url.find(".jpeg") != std::string::npos;
-
-        if (isImage) {
-            size_t sigPos = newUrl.find("&sig=");
-            if (sigPos == std::string::npos) {
-                sigPos = newUrl.find("?sig="); // handles sig being the first/only query param
+    // Discord presence: only fires on room URLs, and only when the room ID actually changes.
+    {
+        size_t roomsPos = urlStr.find("/Room_server/rooms/");
+        if (roomsPos != std::string::npos) {
+            size_t idStart = roomsPos + sizeof("/Room_server/rooms/") - 1;
+            uint64_t id = 0;
+            size_t i = idStart;
+            while (i < urlStr.size() && urlStr[i] >= '0' && urlStr[i] <= '9') {
+                id = id * 10 + (urlStr[i] - '0');
+                i++;
             }
-            if (sigPos != std::string::npos) {
-                newUrl = newUrl.substr(0, sigPos);
-                std::cout << TAG_IMAGES() << "[!] Removed signature from URL\n";
+            static std::atomic<uint64_t> lastRoomId{ 0 };
+            if (id != 0 && DiscordRPC::IsRunning() && lastRoomId.exchange(id) != id) {
+                std::string urlCopy = urlStr;
+                std::thread([urlCopy]() {
+                    DiscordRPC::SetRoomFromUrl(urlCopy);
+                    }).detach();
             }
         }
+    }
 
-        std::cout << TAG_NET() << "REWRITTEN: " << newUrl << "\n";
+    // Hile drop (HTTP-layer suppressor). Do this before the rewrite so we don't waste an
+    // allocation on a URL we're about to swallow.
+    if (urlStr.find("/api/PlayerReporting/v1/hile") != std::string::npos ||
+        urlStr.find("/api/PlayerReporting/v1/referee") != std::string::npos) {
+        std::cout << TAG_HILE() << "DROPPED " << urlStr << std::endl;
+        return;   // suppress; do NOT call original
+    }
 
-        using Il2cppStringNewFn = ::Il2cppString* (*)(const char*);
+    // ns.rec.net -> gameauth.ddns.net rewrite.
+    size_t nsPos = urlStr.find("ns.rec.net");
+    if (nsPos != std::string::npos) {
+        std::string newUrl = urlStr;
+        newUrl.replace(nsPos, sizeof("ns.rec.net") - 1, "gameauth.ddns.net");
+
+        using Il2cppStringNewFn = Il2cppString * (*)(const char*);
         auto strNew = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
-        ::Il2cppString* NewStr = spoof_call((const void*)RetAddr, strNew, newUrl.c_str());
-
-        if (NewStr) {
-            using ObjectGetClassFn = void* (*)(void*);
-            auto getClass = reinterpret_cast<ObjectGetClassFn>(GA + RR::Methods::Il2cpp::il2cpp_object_get_class);
-            void* UriClass = spoof_call((const void*)RetAddr, getClass, uri);
-
-            if (UriClass) {
-                using ObjectNewFn = void* (*)(void*);
-                auto objNew = reinterpret_cast<ObjectNewFn>(GA + RR::Methods::Il2cpp::il2cpp_object_new);
-                void* NewUri = spoof_call((const void*)RetAddr, objNew, UriClass);
-
-                if (NewUri) {
-                    using UriCtor = void (*)(void*, ::Il2cppString*);
-                    auto uriCtor = reinterpret_cast<UriCtor>(GA + RR::Methods::System::Uri::ctor);
-                    spoof_call((const void*)RetAddr, uriCtor, NewUri, NewStr);
-                    set<void*>(request, 16, NewUri);
-                    std::cout << TAG_NET() << "[+] Host swap applied — request will go to " << newUrl << "\n";
-                }
-                else {
-                    std::cout << TAG_WARN() << "il2cpp_object_new returned null — REWRITTEN was logged but swap NOT applied. Original request still points at ns.rec.net.\n";
-                }
-            }
-            else {
-                std::cout << TAG_WARN() << "il2cpp_object_get_class returned null — REWRITTEN was logged but swap NOT applied. Original request still points at ns.rec.net.\n";
-            }
+        if (!strNew) {
+            std::cout << TAG_WARN() << "il2cpp_string_new is null - cannot rewrite URL" << std::endl;
+            return SendRequest_O(request);
         }
-        else {
-            std::cout << TAG_WARN() << "il2cpp_string_new returned null — REWRITTEN was logged but swap NOT applied. Original request still points at ns.rec.net.\n";
+        Il2cppString* NewUriString = spoof_call(RetAddr, strNew, newUrl.c_str());
+        if (!NewUriString) {
+            std::cout << TAG_WARN() << "il2cpp_string_new returned null" << std::endl;
+            return SendRequest_O(request);
         }
+
+        using ObjectGetClassFn = void* (*)(void*);
+        auto getClass = reinterpret_cast<ObjectGetClassFn>(GA + RR::Methods::Il2cpp::il2cpp_object_get_class);
+        if (!getClass) { return SendRequest_O(request); }
+
+        void* UriClass = spoof_call(RetAddr, getClass, uri);
+        if (!UriClass) { return SendRequest_O(request); }
+
+        using ObjectNewFn = void* (*)(void*);
+        auto objNew = reinterpret_cast<ObjectNewFn>(GA + RR::Methods::Il2cpp::il2cpp_object_new);
+        if (!objNew) { return SendRequest_O(request); }
+
+        void* NewUri = spoof_call(RetAddr, objNew, UriClass);
+        if (!NewUri) { return SendRequest_O(request); }
+
+        using UriCtor = void (*)(void*, Il2cppString*);
+        auto uriCtor = reinterpret_cast<UriCtor>(GA + RR::Methods::System::Uri::ctor);
+        if (!uriCtor) { return SendRequest_O(request); }
+
+        spoof_call(RetAddr, uriCtor, NewUri, NewUriString);
+        set<void*>(request, 16, NewUri);
+
+        std::cout << TAG_NET() << "REWRITTEN: " << newUrl << std::endl;
     }
 
     return SendRequest_O(request);
@@ -118,11 +233,7 @@ bool Receive_H(void* self, int32_t forceReadRawContentLength, bool readPayloadDa
     return false;
 }
 
-// Hook for GetDataAsText - Fixed declaration
-// NOTE: not currently wired up via MH_CreateHook in PatchInstaller.h.
-// You'll need the real function address before this fires — but once
-// hooked, this will log every response body coming back from the
-// server, which is what you're currently missing visibility into.
+// Hook for GetDataAsText
 ::Il2cppString* (*GetDataAsText_O)(void*) = nullptr;
 ::Il2cppString* GetDataAsText_H(void* self) {
     ::Il2cppString* result = nullptr;
@@ -130,21 +241,28 @@ bool Receive_H(void* self, int32_t forceReadRawContentLength, bool readPayloadDa
         result = GetDataAsText_O(self);
     }
     if (result) {
-        std::string body = ReadIl2CppStringOwned(result);
-        std::cout << TAG_NET() << "RESPONSE: " << (body.size() > 500 ? body.substr(0, 500) + "...(truncated)" : body) << "\n";
+        auto readStd = [](void* s) -> std::string {
+            int32_t len = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(s) + 16);
+            if (len <= 0 || len > 65536) return "";
+            auto data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(s) + 20);
+            return WStringToString(data, len);
+            };
+        auto readLegacy = [](::Il2cppString* s) -> std::string {
+            int32_t len = s->Length;
+            if (len <= 0 || len > 65536) return "";
+            auto data = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(s) + 4);
+            return WStringToString(data, len);
+            };
+
+        std::string body = readStd(result);
+        if (body.empty()) body = readLegacy(result);
+
+        std::cout << TAG_NET() << "RESPONSE: " << (body.size() > 500 ? body.substr(0, 500) + "...(truncated)" : body) << std::endl;
     }
     else {
         std::cout << TAG_WARN() << "GetDataAsText returned null response\n";
     }
     return result;
-}
-
-// RecNet Response
-void (*RecNetResponse_O)(void*, void*, void*) = nullptr;
-void RecNetResponse_H(void* request, void* response, void* promise) {
-    if (RecNetResponse_O) {
-        RecNetResponse_O(request, response, promise);
-    }
 }
 
 thread_local bool g_inReceive = false;

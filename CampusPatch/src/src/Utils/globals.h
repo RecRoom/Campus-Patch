@@ -1,17 +1,10 @@
 #pragma once
 #include "Inc/Includes.h"
 
-// These are NOT initialized at DLL load time. Suspended-start injection would
-// run GetModuleHandle when the game hasn't loaded modules yet, causing NULL
-// dereferences. Instead we set these in InitGlobals() from InitThread().
-
 uintptr_t GA = 0;
 const IMAGE_NT_HEADERS* NtHeaders = nullptr;
 uintptr_t Referee = 0;
 uint64_t* RetAddr = nullptr;
-
-// Called from InitThread after GameAssembly and Referee are loaded.
-// Verifies both modules exist and GameAssembly has valid PE headers.
 
 static bool InitGlobals() {
     GA = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
@@ -46,35 +39,42 @@ static bool InitGlobals() {
 
 template <typename T>
 T read(void* obj, std::ptrdiff_t offset) {
+    if (!obj) return T{};
     return *(T*)((std::uint8_t*)obj + offset);
 }
 
 template <typename T>
 void set(void* obj, std::ptrdiff_t offset, T val) {
+    if (!obj) return;
     *(T*)((std::uint8_t*)obj + offset) = val;
 }
 
-// FIXED: ReadIl2CppStringOwned - safely reads IL2CPP string
-// The raw ReadIl2CppString has been removed to prevent memory leaks
-inline std::string ReadIl2CppStringOwned(Il2cppString* il2cppString) {
+// ReadIl2CppString - THIS IS THE ORIGINAL WORKING VERSION
+inline std::string ReadIl2CppString(Il2cppString* il2cppString) {
     if (!il2cppString) {
         return {};
     }
 
     size_t length = static_cast<size_t>(il2cppString->Length);
-    const size_t bufferSize = (length + 1) * sizeof(wchar_t);
-    char* internalString = new char[bufferSize];
-    size_t convertedChars = 0;
-
-    errno_t result = wcstombs_s(&convertedChars, internalString, bufferSize,
-        reinterpret_cast<wchar_t*>(il2cppString) + 0xA, length);
-
-    if (result != 0) {
-        delete[] internalString;
+    if (length == 0 || length > 4096) {
         return {};
     }
 
-    std::string out(internalString);
-    delete[] internalString;
-    return out;
+    // String data starts at offset 4 (after the Length int)
+    const wchar_t* wstr = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(il2cppString) + 4);
+
+    // Convert to UTF-8
+    int requiredSize = WideCharToMultiByte(CP_UTF8, 0, wstr, (int)length, nullptr, 0, nullptr, nullptr);
+    if (requiredSize <= 0) {
+        return {};
+    }
+
+    std::string result(requiredSize, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr, (int)length, &result[0], requiredSize, nullptr, nullptr);
+    return result;
+}
+
+// Alias for compatibility
+inline std::string ReadIl2CppStringOwned(Il2cppString* il2cppString) {
+    return ReadIl2CppString(il2cppString);
 }

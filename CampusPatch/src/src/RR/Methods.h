@@ -72,29 +72,64 @@ namespace RR::Methods::RecNetImages {
     uintptr_t GMMBKKHKLFK_MoveNext = 0x761E060;
     uintptr_t NKJKLKMGNBL_MoveNext = 0x761F050;
     uintptr_t FILCOLNCBFO_MoveNext = 0x761C7B0;
-
-    // Image Signature - scanned at runtime
-    uintptr_t SignatureCheck = 0x3084CB;
-    uintptr_t SignatureValidationFunction = 0;
 }
 
-// IMAGE SIGNATURE - Outer and Verifier addresses
+// ================================================================
+// IMAGE SIGNATURE - the server sends a content-signature header the
+// client must accept, so the verifier's result has to be forced true.
+//
+// The hook approach (Verify) is PROVEN WORKING from the original
+// Patches.h. It forces the verification function to always return true.
+// ================================================================
 namespace RR::Methods::ImageSignature {
-    // Outer function that calls the verifier (usually a MoveNext method)
-    // RVA: 0x761F400 - OHAPJOGMJPD_MoveNext
-    uint32_t Outer = 0x761F400;
-
-    // Verifier function that validates the image signature
-    uint32_t Verifier = 0x761F500;
-
-    // The actual ImageSignature check offset found by the game
-    uint32_t ImageSignatureCheckOffset = 0x3084CB;
+    // The actual image signature verification function
+    // RVA from the working build - this is what the hook uses
+    // If this RVA is wrong for your build, find the correct one
+    // by searching for the function that takes (byte[] data, byte[] sig)
+    uintptr_t Verify = 0x7CF32F0;
 }
 
 // STEAMVR FOV - set_fieldOfView
 namespace RR::Methods::SteamVR {
     // set_fieldOfView: [00007FF8571E06F0], RVA: [0xA906F0]
     uintptr_t SetFieldOfView = 0xA906F0;
+}
+
+// ================================================================
+// PHOTON BACKEND SELECTION
+//
+// PhotonHost set -> DNS for *.photonengine / exitgames is redirected
+// PhotonPort, if non-zero, overrides the connect port on AppSettings
+// ================================================================
+
+// Photon.Realtime.AppSettings -- field offsets from the runtime dump
+namespace RR::Offsets::AppSettings {
+    constexpr int AppIdRealtime = 16;   // Il2CppString*
+    constexpr int AppIdChat = 24;   // Il2CppString*
+    constexpr int AppIdVoice = 32;   // Il2CppString*
+    constexpr int AppVersion = 40;   // Il2CppString*
+    constexpr int UseNameServer = 48;   // bool
+    constexpr int FixedRegion = 56;   // Il2CppString*
+    constexpr int Server = 72;   // Il2CppString*
+    constexpr int Port = 80;   // int32
+}
+
+// Photon methods - used for ConnectUsingSettings hook and diagnostic tracing
+namespace RR::Methods::Photon {
+    // ConnectUsingSettings seam - sets the port before connect
+    uintptr_t ConnectUsingSettings = 0x757E8C0;
+
+    // Diagnostic tracing (only used when EnableTracing = true)
+    uintptr_t SendOperation = 0x7534610;
+    uintptr_t EnqueueStatusCallback = 0x752C540;
+    uintptr_t Protocol16_DeserializeOperationResponse = 0x75388D0;
+    uintptr_t Protocol18_DeserializeOperationResponse = 0x753E610;
+    uintptr_t Protocol16_DeserializeEventData = 0x7537E30;
+    uintptr_t Protocol18_DeserializeEventData = 0x753E2F0;
+
+    // NOT hooked: EnetPeer_IsTransportEncrypted - measured original=0
+    // so datagram encryption was never the cause of Luxon's silence
+    uintptr_t EnetPeer_IsTransportEncrypted = 0x7521380;
 }
 
 // HHFAEMGHOHN Enum - Image signature validation

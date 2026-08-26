@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -6,31 +7,100 @@
 #include <string>
 #include <iostream>
 #include <algorithm>
+#include <vector>
+#include <set>
 #include "../RR/Patching/Console.h"
 #include "AntiKill.h"
 
 namespace AntiSandbox {
 
-    static bool IsVirtualMachine() {
+    static bool IsHypervisorPresent() {
         int cpuInfo[4] = { 0, 0, 0, 0 };
         __cpuid(cpuInfo, 1);
         return (cpuInfo[2] & (1 << 31)) != 0;
     }
 
-    static bool IsVMViaStrings() {
-        const char* vmProcesses[] = {
+    static std::string GetHypervisorVendor() {
+        int cpuInfo[4] = { 0, 0, 0, 0 };
+
+        __cpuid(cpuInfo, 0);
+        if (cpuInfo[0] < 0x40000000) {
+            return "";
+        }
+
+        __cpuid(cpuInfo, 0x40000000);
+
+        char vendor[13] = { 0 };
+        memcpy(vendor, &cpuInfo[1], 4);
+        memcpy(vendor + 4, &cpuInfo[2], 4);
+        memcpy(vendor + 8, &cpuInfo[3], 4);
+
+        return std::string(vendor);
+    }
+
+    static bool IsKnownVMHypervisor(const std::string& vendor) {
+        static const std::vector<std::string> knownVMs = {
+            "VMwareVMware",
+            "VBoxVBoxVBox",
+            "XenVMMXenVMM",
+            "KVMKVMKVM",
+            "QEMUQEMUQEMU",
+            "VirtualPC",
+            "Parallels",
+        };
+
+        for (const auto& vm : knownVMs) {
+            if (vendor == vm) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool IsHyperVHost() {
+        // Check if Hyper-V is enabled but this is the host, not a VM
+        HKEY hKey;
+        LONG result = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\Hyper-V",
+            0, KEY_READ, &hKey);
+
+        if (result == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+
+            // Check if vmwp.exe is running (VM worker process)
+            HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (hSnapshot != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32 pe32 = {};
+                pe32.dwSize = sizeof(PROCESSENTRY32);
+                if (Process32First(hSnapshot, &pe32)) {
+                    do {
+                        std::string name = pe32.szExeFile;
+                        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+                        if (name == "vmwp.exe") {
+                            CloseHandle(hSnapshot);
+                            return false; // VM is running, this is a VM
+                        }
+                    } while (Process32Next(hSnapshot, &pe32));
+                }
+                CloseHandle(hSnapshot);
+            }
+            return true; // Hyper-V enabled but no VMs running = host system
+        }
+        return false;
+    }
+
+    static bool IsVMProcesses() {
+        static const std::set<std::string> vmProcesses = {
             "vmtoolsd.exe",
-            "VBoxService.exe",
-            "VBoxTray.exe",
-            "vmsrvc.exe",
             "vmware.exe",
             "vmwaretray.exe",
+            "vboxservice.exe",
+            "vboxtray.exe",
             "xenservice.exe",
-            "vboxguest.exe",
-            "vboxmouse.exe",
-            "vm3dservice.exe",
-            "vmtools.exe",
-            nullptr
+            "qemu-ga.exe",
+            "parallels.exe",
+            "prl_cc.exe",
+            "prl_tools.exe",
         };
 
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -43,13 +113,10 @@ namespace AntiSandbox {
             do {
                 std::string name = pe32.szExeFile;
                 std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-                for (int i = 0; vmProcesses[i]; i++) {
-                    std::string vmProc = vmProcesses[i];
-                    std::transform(vmProc.begin(), vmProc.end(), vmProc.begin(), ::tolower);
-                    if (name.find(vmProc) != std::string::npos) {
-                        CloseHandle(hSnapshot);
-                        return true;
-                    }
+
+                if (vmProcesses.find(name) != vmProcesses.end()) {
+                    CloseHandle(hSnapshot);
+                    return true;
                 }
             } while (Process32Next(hSnapshot, &pe32));
         }
@@ -58,36 +125,37 @@ namespace AntiSandbox {
         return false;
     }
 
-    static bool IsVMViaDevices() {
-        const char* vmDevices[] = {
-            "VMware",
-            "VirtualBox",
-            "VBox",
-            "Xen",
-            "QEMU",
-            "Hyper-V",
-            "Virtual",
-            nullptr
+    static bool IsVMDevices() {
+        static const std::vector<std::string> vmDeviceStrings = {
+            "vmware", "virtualbox", "vbox", "xen", "qemu", "parallels"
         };
 
         HKEY hKey;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\BIOS", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            char biosVendor[256];
+        LONG result = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "HARDWARE\\DESCRIPTION\\System\\BIOS",
+            0, KEY_READ, &hKey);
+
+        if (result == ERROR_SUCCESS) {
+            char biosVendor[512] = { 0 };
             DWORD size = sizeof(biosVendor);
-            if (RegQueryValueExA(hKey, "SystemManufacturer", nullptr, nullptr, (LPBYTE)biosVendor, &size) == ERROR_SUCCESS) {
+
+            if (RegQueryValueExA(hKey, "SystemManufacturer", nullptr, nullptr,
+                (LPBYTE)biosVendor, &size) == ERROR_SUCCESS) {
+
                 std::string vendor = biosVendor;
                 std::transform(vendor.begin(), vendor.end(), vendor.begin(), ::tolower);
-                for (int i = 0; vmDevices[i]; i++) {
-                    std::string vmDev = vmDevices[i];
-                    std::transform(vmDev.begin(), vmDev.end(), vmDev.begin(), ::tolower);
-                    if (vendor.find(vmDev) != std::string::npos) {
+
+                for (const auto& vm : vmDeviceStrings) {
+                    if (vendor.find(vm) != std::string::npos) {
                         RegCloseKey(hKey);
                         return true;
                     }
                 }
             }
+
             RegCloseKey(hKey);
         }
+
         return false;
     }
 
@@ -98,63 +166,67 @@ namespace AntiSandbox {
         return memStatus.ullTotalPhys < 2ULL * 1024 * 1024 * 1024;
     }
 
-    static bool IsVMViaTSC() {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        QueryPerformanceCounter(&end);
-
-        for (int i = 0; i < 100000; i++) { volatile int x = i * i; }
-
-        LARGE_INTEGER end2;
-        QueryPerformanceCounter(&end2);
-
-        LONGLONG diff1 = end.QuadPart - start.QuadPart;
-        LONGLONG diff2 = end2.QuadPart - start.QuadPart;
-
-        return diff2 - diff1 > diff1 * 2;
-    }
-
     static bool PerformAntiSandboxChecks() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is running anti-sandbox checks...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is running anti-sandbox checks...\n";
 
-        if (IsVirtualMachine()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected VM (CPUID)\n";
-            AntiKill::TriggerAntiCheat("Virtual machine detected (CPUID)");
-            return false;
+        if (IsHypervisorPresent()) {
+            std::string vendor = GetHypervisorVendor();
+            Protections::log << TAG_ANTI() << "Hypervisor detected: " << vendor << "\n";
+
+            if (vendor.find("Microsoft Hv") != std::string::npos) {
+                if (IsHyperVHost()) {
+                    Protections::log << TAG_ANTI() << "Hyper-V is enabled on the host system - this is NOT a VM\n";
+                    Protections::log << TAG_ANTI() << "Continuing with other checks...\n";
+                }
+                else {
+                    Protections::log << TAG_ANTI() << "Kurt Cobain detected Hyper-V VM\n";
+                    AntiKill::TriggerAntiCheat("Hyper-V Virtual Machine detected");
+                    return false;
+                }
+            }
+            else if (IsKnownVMHypervisor(vendor)) {
+                Protections::log << TAG_ANTI() << "Kurt Cobain detected VM: " << vendor << "\n";
+                AntiKill::TriggerAntiCheat("Virtual machine detected: " + vendor);
+                return false;
+            }
+            else {
+                Protections::log << TAG_ANTI() << "Unknown hypervisor vendor: " << vendor << "\n";
+                Protections::log << TAG_ANTI() << "This may be a physical machine with virtualization enabled\n";
+                Protections::log << TAG_ANTI() << "Skipping hypervisor check - continuing with other checks...\n";
+            }
         }
 
-        if (IsVMViaStrings()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected VM (processes)\n";
+        // Only check VM processes if not Hyper-V host
+        if (IsVMProcesses()) {
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected VM processes\n";
             AntiKill::TriggerAntiCheat("Virtual machine detected (processes)");
             return false;
         }
 
-        if (IsVMViaDevices()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected VM (devices)\n";
+        if (IsVMDevices()) {
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected VM devices\n";
             AntiKill::TriggerAntiCheat("Virtual machine detected (devices)");
             return false;
         }
 
         if (IsLowMemoryVM()) {
-            std::cout << TAG_ANTI() << "Kurt Cobain detected VM (low memory)\n";
+            Protections::log << TAG_ANTI() << "Kurt Cobain detected VM (low memory)\n";
             AntiKill::TriggerAntiCheat("Virtual machine detected (low memory)");
             return false;
         }
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-sandbox checks passed.\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: Anti-sandbox checks passed.\n";
         return true;
     }
 
     static void AntiSandboxThread() {
+        Sleep(30000);
+
         while (true) {
-            Sleep(5000);
+            Sleep(15000);
 
-            if (IsVirtualMachine() ||
-                IsVMViaStrings() ||
-                IsVMViaDevices() ||
-                IsLowMemoryVM()) {
-
-                std::cout << TAG_ANTI() << "Kurt Cobain detected VM during monitoring\n";
+            if (IsVMProcesses() || IsVMDevices() || IsLowMemoryVM()) {
+                Protections::log << TAG_ANTI() << "Kurt Cobain detected VM during monitoring\n";
                 AntiKill::TriggerAntiCheat("Virtual machine detected during monitoring");
                 return;
             }
@@ -162,7 +234,8 @@ namespace AntiSandbox {
     }
 
     static void StartMonitoring() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-sandbox monitoring...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is starting anti-sandbox monitoring...\n";
+        Protections::log << TAG_ANTI() << "Monitoring will start in 30 seconds to let the system stabilize...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiSandboxThread();
             return 0;

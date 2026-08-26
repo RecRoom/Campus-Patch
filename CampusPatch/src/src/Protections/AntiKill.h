@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <string>
@@ -41,13 +42,13 @@ namespace AntiKill {
     };
 
     static void KillProcess() {
-        std::cout << TAG_ANTI() << "Terminating process...\n";
+        Protections::log << TAG_ANTI() << "Terminating process...\n";
         TerminateProcess(GetCurrentProcess(), 1);
         ExitProcess(1);
     }
 
     static void SendDiscordWebhook(const std::string& message) {
-        std::cout << TAG_ANTI() << "Sending Discord webhook...\n";
+        Protections::log << TAG_ANTI() << "Sending Discord webhook...\n";
     }
 
     static HWND FindGameWindow() {
@@ -97,7 +98,7 @@ namespace AntiKill {
         g_triggered = true;
         g_blockGameLoad = true;
 
-        std::string fullMessage = "Kurt Cobain says: An unauthorized application was detected.\n\n" + message + "\n\nThis window will close automatically.";
+        std::string fullMessage = "Kurt Cobain says: Rape me, I'm not the only one.\n\n" + message + "\n\nStop skidding.";
         ShowAutoClosePopup(fullMessage);
     }
 
@@ -141,24 +142,12 @@ namespace AntiKill {
         return false;
     }
 
+    // VM detection DISABLED - was causing false positives on legitimate hardware
     static bool IsVirtualMachine() {
-        int cpuInfo[4] = { 0, 0, 0, 0 };
-        __cpuid(cpuInfo, 1);
-        return (cpuInfo[2] & (1 << 31)) != 0;
+        return false;
     }
 
     static bool IsVMProcesses() {
-        const char* vmProcesses[] = {
-            "vmtoolsd.exe", "VBoxService.exe", "VBoxTray.exe",
-            "vmware.exe", "vmwaretray.exe", "xenservice.exe",
-            nullptr
-        };
-
-        for (int i = 0; vmProcesses[i]; i++) {
-            if (IsProcessRunning(vmProcesses[i])) {
-                return true;
-            }
-        }
         return false;
     }
 
@@ -178,7 +167,7 @@ namespace AntiKill {
 
     static std::string PerformAntiCheatChecks() {
         std::string detected = "";
-        std::cout << TAG_ANTI() << "Kurt Cobain is performing anti-cheat checks...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is performing anti-cheat checks...\n";
 
         for (const auto& process : kBlacklistedProcesses) {
             if (IsProcessRunning(process)) {
@@ -192,22 +181,23 @@ namespace AntiKill {
         if (HasHardwareBreakpoints()) {
             detected += "[-] Hardware breakpoints detected\n";
         }
-        if (IsVirtualMachine()) {
-            detected += "[-] Virtual machine detected (CPUID)\n";
-        }
-        if (IsVMProcesses()) {
-            detected += "[-] Virtual machine processes detected\n";
-        }
+        // VM checks DISABLED - they cause false positives on legitimate hardware
+        // if (IsVirtualMachine()) {
+        //     detected += "[-] Virtual machine detected (CPUID)\n";
+        // }
+        // if (IsVMProcesses()) {
+        //     detected += "[-] Virtual machine processes detected\n";
+        // }
         if (HasProxyEnabled()) {
             detected += "[-] Proxy enabled\n";
         }
 
         if (!detected.empty()) {
-            std::cout << TAG_ANTI() << "Anti-cheat triggered!\n" << detected;
+            Protections::log << TAG_ANTI() << "Anti-cheat triggered!\n" << detected;
             return detected;
         }
         else {
-            std::cout << TAG_ANTI() << "All anti-cheat checks passed\n";
+            Protections::log << TAG_ANTI() << "All anti-cheat checks passed\n";
         }
         return "";
     }
@@ -237,16 +227,16 @@ namespace AntiKill {
         }
         g_initialized = true;
 
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-cheat system...\n";
-        std::cout << TAG_ANTI() << "Anti-cheat features loaded:\n";
-        std::cout << TAG_ANTI() << "  - Process scanning\n";
-        std::cout << TAG_ANTI() << "  - Debugger detection\n";
-        std::cout << TAG_ANTI() << "  - VM detection\n";
-        std::cout << TAG_ANTI() << "  - Network/Proxy detection\n";
-        std::cout << TAG_ANTI() << "  - Discord webhook logging\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is starting anti-cheat system...\n";
+        Protections::log << TAG_ANTI() << "Anti-cheat features loaded:\n";
+        Protections::log << TAG_ANTI() << "  - Process scanning\n";
+        Protections::log << TAG_ANTI() << "  - Debugger detection\n";
+        Protections::log << TAG_ANTI() << "  - Network/Proxy detection\n";
+        Protections::log << TAG_ANTI() << "  - Discord webhook logging\n";
+        Protections::log << TAG_ANTI() << "  - VM detection: DISABLED (false positive fix)\n";
 
         g_gameWindow = FindGameWindow();
-        std::cout << TAG_ANTI() << "Game window found: " << std::hex << g_gameWindow << std::dec << "\n";
+        Protections::log << TAG_ANTI() << "Game window found: " << std::hex << g_gameWindow << std::dec << "\n";
 
         SendDiscordWebhook("**AntiKill Initialized**\nAnti-cheat system is now active.");
 
@@ -258,13 +248,13 @@ namespace AntiKill {
             return;
         }
 
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-cheat monitoring...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is starting anti-cheat monitoring...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiCheatMonitor();
             return 0;
             }, nullptr, 0, nullptr);
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-cheat system active.\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: Anti-cheat system active.\n";
     }
 
 }

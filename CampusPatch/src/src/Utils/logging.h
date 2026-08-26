@@ -125,6 +125,10 @@ namespace CampusLogging {
     thread_local std::string TeeBuf::lineBuf_;
 
     static TeeBuf* g_tee = nullptr;
+    // The rdbuf std::cout had BEFORE we installed the tee. Restored on Shutdown, so any
+    // std::cout write that happens between our teardown and process exit (there ARE some
+    // via the atexit-ordered destructors of static objects) doesn't touch freed memory.
+    static std::streambuf* g_origCoutBuf = nullptr;
 
     // Convert UTC to BST (UTC + 1 hour)
     static void UtcNowAsBst(SYSTEMTIME& out) {
@@ -191,12 +195,19 @@ namespace CampusLogging {
         if (hn > 0) tee->sputn(header, hn);
 
         g_tee = tee;
-        std::cout.rdbuf(g_tee);
+        // Remember the previous rdbuf so Shutdown can put it back before freeing our tee.
+        // Without this, delete g_tee leaves std::cout.rdbuf() dangling -> next std::cout <<
+        // writes freed memory -> UAF crash on unload (often via a static-destructor log).
+        g_origCoutBuf = std::cout.rdbuf(g_tee);
     }
 
-    // FIXED: Cleanup function to prevent memory leak
     static void Shutdown() {
         if (g_tee) {
+            // Point std::cout back at its original streambuf FIRST so any late writes
+            // (e.g. from destructors that run after us) land on the console instead of
+            // a freed TeeBuf. Only then is it safe to delete.
+            std::cout.rdbuf(g_origCoutBuf);
+            g_origCoutBuf = nullptr;
             delete g_tee;
             g_tee = nullptr;
         }

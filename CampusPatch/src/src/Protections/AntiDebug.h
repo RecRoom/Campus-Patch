@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <string>
@@ -52,17 +53,17 @@ namespace AntiDebug {
     }
 
     static bool PerformAntiDebugCheck() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is running anti-debug checks...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is running anti-debug checks...\n";
 
         for (const auto& process : kBlacklistedProcesses) {
             if (IsProcessRunning(process)) {
-                std::cout << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
+                Protections::log << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
                 AntiKill::TriggerAntiCheat("Unauthorized application detected: " + process);
                 return false;
             }
         }
 
-        std::cout << TAG_ANTI() << "Kurt Cobain says: Anti-debug checks passed.\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain says: Anti-debug checks passed.\n";
         return true;
     }
 
@@ -74,7 +75,7 @@ namespace AntiDebug {
 
             for (const auto& process : kBlacklistedProcesses) {
                 if (IsProcessRunning(process)) {
-                    std::cout << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
+                    Protections::log << TAG_ANTI() << "Kurt Cobain detected: " << process << "\n";
                     AntiKill::TriggerAntiCheat("Unauthorized application detected during monitoring: " + process);
                     return;
                 }
@@ -83,8 +84,8 @@ namespace AntiDebug {
     }
 
     static void StartAntiDebugMonitoring() {
-        std::cout << TAG_ANTI() << "Kurt Cobain is starting anti-debug monitoring...\n";
-        std::cout << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is starting anti-debug monitoring...\n";
+        Protections::log << TAG_ANTI() << "Monitoring will start in 20 seconds to let the game stabilize...\n";
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             AntiDebugThread();
             return 0;

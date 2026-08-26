@@ -1,4 +1,5 @@
 #pragma once
+#include "AntiLog.h"
 
 #include <windows.h>
 #include <set>
@@ -109,8 +110,8 @@ namespace AntiInjection {
     static DWORD WINAPI DLLScannerThread(LPVOID) {
         Sleep(60000);
 
-        std::cout << TAG_ANTI() << "DLL Scanner thread started\n";
-        std::cout << TAG_ANTI() << "Checking for cheat/injector DLLs and .tmp files\n";
+        Protections::log << TAG_ANTI() << "DLL Scanner thread started\n";
+        Protections::log << TAG_ANTI() << "Checking for cheat/injector DLLs and .tmp files\n";
 
         std::set<std::string> loadedDLLs;
         int scanCount = 0;
@@ -134,7 +135,7 @@ namespace AntiInjection {
             size_t count = 0;
 
             if (!GetLoadedDLLsRaw(rawDLLs, 512, count)) {
-                std::cout << TAG_ANTI() << "Scan exception, skipping cycle\n";
+                Protections::log << TAG_ANTI() << "Scan exception, skipping cycle\n";
                 continue;
             }
 
@@ -152,7 +153,7 @@ namespace AntiInjection {
                     continue;
                 }
 
-                std::cout << TAG_ANTI() << "NEW DLL DETECTED: " << dll << "\n";
+                Protections::log << TAG_ANTI() << "NEW DLL DETECTED: " << dll << "\n";
 
                 bool isAllowed = false;
                 for (const auto& allowed : kAllowedDLLs) {
@@ -165,12 +166,12 @@ namespace AntiInjection {
                 }
 
                 if (isAllowed) {
-                    std::cout << TAG_ANTI() << "IGNORING " << dll << " (allowed)\n";
+                    Protections::log << TAG_ANTI() << "IGNORING " << dll << " (allowed)\n";
                     continue;
                 }
 
                 if (dll.find(".tmp") != std::string::npos) {
-                    std::cout << TAG_ANTI() << "[!] .tmp DLL DETECTED: " << dll << "\n";
+                    Protections::log << TAG_ANTI() << "[!] .tmp DLL DETECTED: " << dll << "\n";
                     AntiKill::TriggerAntiCheat("Suspicious .tmp DLL loaded: " + dll);
                     return 0;
                 }
@@ -184,18 +185,18 @@ namespace AntiInjection {
                 }
 
                 if (isBlacklisted) {
-                    std::cout << TAG_ANTI() << "[!] BLACKLISTED DLL: " << dll << "\n";
+                    Protections::log << TAG_ANTI() << "[!] BLACKLISTED DLL: " << dll << "\n";
                     AntiKill::TriggerAntiCheat("Unauthorized DLL loaded: " + dll);
                     return 0;
                 }
 
-                std::cout << TAG_ANTI() << "IGNORING " << dll << " (safe)\n";
+                Protections::log << TAG_ANTI() << "IGNORING " << dll << " (safe)\n";
             }
 
             loadedDLLs = currentDLLs;
             scanCount++;
             if (scanCount % 10 == 0) {
-                std::cout << TAG_ANTI() << "Scan #" << scanCount << " - " << loadedDLLs.size() << " loaded\n";
+                Protections::log << TAG_ANTI() << "Scan #" << scanCount << " - " << loadedDLLs.size() << " loaded\n";
             }
         }
 
@@ -208,25 +209,25 @@ namespace AntiInjection {
         }
         g_installed = true;
 
-        std::cout << TAG_ANTI() << "Kurt Cobain is installing anti-injection protections...\n";
-        std::cout << TAG_ANTI() << "Allowed DLLs: ";
+        Protections::log << TAG_ANTI() << "Kurt Cobain is installing anti-injection protections...\n";
+        Protections::log << TAG_ANTI() << "Allowed DLLs: ";
         for (const auto& dll : kAllowedDLLs) {
             std::cout << dll << " ";
         }
         std::cout << "\n";
-        std::cout << TAG_ANTI() << "Checking for: cheat/injector DLLs, .tmp files\n";
+        Protections::log << TAG_ANTI() << "Checking for: cheat/injector DLLs, .tmp files\n";
 
         HANDLE hThread = CreateThread(NULL, 0, DLLScannerThread, NULL, 0, NULL);
         if (hThread) {
             CloseHandle(hThread);
-            std::cout << TAG_ANTI() << "Started DLL scanner thread\n";
+            Protections::log << TAG_ANTI() << "Started DLL scanner thread\n";
         }
         else {
-            std::cout << TAG_ANTI() << "Failed to start DLL scanner thread\n";
+            Protections::log << TAG_ANTI() << "Failed to start DLL scanner thread\n";
         }
 
-        std::cout << TAG_ANTI() << "Exception handler: DISABLED (prevents crashes)\n";
-        std::cout << TAG_ANTI() << "Anti-injection protections installed.\n";
+        Protections::log << TAG_ANTI() << "Exception handler: DISABLED (prevents crashes)\n";
+        Protections::log << TAG_ANTI() << "Anti-injection protections installed.\n";
     }
 
 }
