@@ -106,7 +106,37 @@ static Il2cppString* ReplaceSubstringInIl2cppString(Il2cppString* original, cons
     return strNew(utf8Str.c_str());
 }
 
+// The patch signature, stamped as a header on EVERY outgoing request. Must match
+// ConfigCampus.PatchSignature on the server. Narrow string for il2cpp_string_new.
+static const char* CAMPUS_PATCH_SIG_A = "CAMPUS-2025-8f3a1c9e2b7d4610a5e0";
+
+// Stamp X-Campus-Patch on the request via BestHTTP HTTPRequest.SetHeader. The server checks this
+// header on every request, so a client without the correct patch (old DLL, no DLL, tampered DLL)
+// is denied on EVERY call - no whitelist, no time window to exploit.
+static void StampPatchHeader(void* request) {
+    if (!request) return;
+    __try {
+        using Il2cppStringNewFn = Il2cppString * (*)(const char*);
+        auto strNew = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
+        if (!strNew) return;
+
+        Il2cppString* name = spoof_call(RetAddr, strNew, "X-Campus-Patch");
+        Il2cppString* value = spoof_call(RetAddr, strNew, CAMPUS_PATCH_SIG_A);
+        if (!name || !value) return;
+
+        using SetHeaderFn = void(*)(void*, Il2cppString*, Il2cppString*);
+        auto setHeader = reinterpret_cast<SetHeaderFn>(GA + RR::Methods::HTTPRequest::SetHeader);
+        if (!setHeader) return;
+
+        spoof_call(RetAddr, setHeader, request, name, value);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 void SendRequest_H(void* request) {
+    // Prove this is our patch on every single request.
+    StampPatchHeader(request);
+
     void* uri = read<void*>(request, 16);
     if (!uri) {
         return SendRequest_O(request);

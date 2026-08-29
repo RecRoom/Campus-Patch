@@ -21,6 +21,12 @@ namespace RR::Methods::HTTPManager {
     uintptr_t SendRequest = 0x77E0950;
 }
 
+// BestHTTP.HTTPRequest instance methods (RVAs from the runtime dump).
+namespace RR::Methods::HTTPRequest {
+    // void SetHeader(string name, string value) - replaces any existing value for that header.
+    uintptr_t SetHeader = 0x77EE310;
+}
+
 // HTTP response data accessors
 namespace RR::Methods::HttpResponse {
     uintptr_t get_DataAsText = 0x77F4F80;

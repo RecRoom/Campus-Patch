@@ -374,12 +374,65 @@ static void TestServerConnection() {
     }
 }
 
+// ================================================================
+// PATCH HANDSHAKE - the server is the gatekeeper.
+// At startup we POST /api/patch/verify with a shared-secret header. The SERVER holds the real
+// secret (ConfigCampus.PatchSignature) and compares it: a match answers HTTP 200, anything else
+// 403. Only a 200 lets this client continue - a wrong/old/absent DLL is denied and aborts, so it
+// never connects. This string MUST equal the server's ConfigCampus.PatchSignature.
+// ================================================================
+static const wchar_t* CAMPUS_PATCH_SIG = L"CAMPUS-2025-8f3a1c9e2b7d4610a5e0";
+
+static bool VerifyPatch() {
+    bool ok = false;
+    HINTERNET hSession = WinHttpOpen(L"CampusPatch/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    if (hSession) {
+        HINTERNET hConnect = WinHttpConnect(hSession, L"gameauth.ddns.net", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (hConnect) {
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", L"/api/patch/verify", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
+            if (hRequest) {
+                DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
+                WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
+
+                std::wstring header = std::wstring(L"X-Campus-Patch: ") + CAMPUS_PATCH_SIG + L"\r\n";
+                if (WinHttpSendRequest(hRequest, header.c_str(), (DWORD)-1L, NULL, 0, 0, 0)
+                    && WinHttpReceiveResponse(hRequest, NULL)) {
+                    DWORD status = 0, size = sizeof(status);
+                    WinHttpQueryHeaders(hRequest,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+                    ok = (status == 200);
+                    std::cout << TAG_INIT() << "[patch] verify -> HTTP " << status << (ok ? " (VALID)" : " (DENIED)") << "\n";
+                }
+                else {
+                    std::cout << TAG_INIT() << "[patch] verify request FAILED (error " << GetLastError() << ")\n";
+                }
+                WinHttpCloseHandle(hRequest);
+            }
+            WinHttpCloseHandle(hConnect);
+        }
+        WinHttpCloseHandle(hSession);
+    }
+    return ok;
+}
+
 static DWORD WINAPI InitThread(LPVOID)
 {
     for (int i = 0; i < 200; i++) {
         if (GetModuleHandleA("GameAssembly.dll") && GetModuleHandleA("Referee.dll")) break;
         Sleep(100);
     }
+
+    // Early friendly check: confirm the server accepts our signature before we bother hooking, so
+    // a wrong/old patch exits cleanly with a message instead of loading into a game that then 403s
+    // on everything. This is just UX - the REAL enforcement is the X-Campus-Patch header stamped
+    // on every request (SendRequest.h), which the server validates per request.
+    if (!VerifyPatch()) {
+        std::cout << TAG_INIT() << CLR_RED << "[patch] server rejected this patch - closing.\n" << CLR_RESET;
+        Sleep(2500);
+        ExitProcess(0);
+    }
+
     if (!InitGlobals()) {
         printf("[Campus] init failed - aborting (no hooks installed)\n");
         return 1;
