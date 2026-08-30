@@ -12,6 +12,14 @@ namespace DiscordRPC {
     void Shutdown();
     void UpdatePresence();
     void SetCurrentRoom(const std::string& roomName);
+    // Set the presence room label directly, bypassing the name-heuristics: "^Name" for a public
+    // room, "[PRIVATE]" to mask a private one, or "" to show no room at all (privacy / hidden).
+    void SetRoomLabel(const std::string& label);
     void ParseRoomFromResponse(const std::string& responseBody);
     void SetRoomFromUrl(const std::string& url);
+    // Capture the local player's account id (from the Notifications hub URL) - lets the presence
+    // look up the player's own room + "Appear Online To" setting.
+    void SetLocalAccountId(uint64_t id);
+    // Recompute presence from the server (room + privacy + appear-online). Safe to call often.
+    void RefreshPresence();
 }

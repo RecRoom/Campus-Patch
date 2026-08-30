@@ -92,6 +92,8 @@ namespace Protections {
         AntiHook::Shutdown();
         DiscordRPC::Shutdown();
 
+#ifndef NDEBUG
         CampusLogging::Shutdown();
+#endif
     }
 }

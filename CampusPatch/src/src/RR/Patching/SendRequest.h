@@ -1,6 +1,7 @@
 #pragma once
 #include "../Methods.h"
 #include "../../Utils/scan.h"
+#include "../../Utils/obf.h"
 #include "../../Utils/deps/spoofcall/RetSpoof.hpp"
 #include "Console.h"
 #include "ServerConfiguration.h"
@@ -106,13 +107,14 @@ static Il2cppString* ReplaceSubstringInIl2cppString(Il2cppString* original, cons
     return strNew(utf8Str.c_str());
 }
 
-// The patch signature, stamped as a header on EVERY outgoing request. Must match
-// ConfigCampus.PatchSignature on the server. Narrow string for il2cpp_string_new.
-static const char* CAMPUS_PATCH_SIG_A = "CAMPUS-2025-8f3a1c9e2b7d4610a5e0";
-
 // Stamp X-Campus-Patch on the request via BestHTTP HTTPRequest.SetHeader. The server checks this
 // header on every request, so a client without the correct patch (old DLL, no DLL, tampered DLL)
 // is denied on EVERY call - no whitelist, no time window to exploit.
+//
+// The header name and (above all) the signature are skCrypt'd: they're stored ENCRYPTED in the
+// binary and only decrypted here into stack buffers, so `strings` on the DLL can't reveal the
+// secret. Copied into fixed buffers (not std::string) because this fn uses __try, which can't
+// hold objects with destructors.
 static void StampPatchHeader(void* request) {
     if (!request) return;
     __try {
@@ -120,8 +122,11 @@ static void StampPatchHeader(void* request) {
         auto strNew = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
         if (!strNew) return;
 
-        Il2cppString* name = spoof_call(RetAddr, strNew, "X-Campus-Patch");
-        Il2cppString* value = spoof_call(RetAddr, strNew, CAMPUS_PATCH_SIG_A);
+        char hn[24];  strcpy_s(hn, sizeof(hn), skCrypt("X-Campus-Patch"));
+        char sig[48]; strcpy_s(sig, sizeof(sig), skCrypt("CAMPUS-2025-2h7Fc20FKokap9Ah3t"));
+
+        Il2cppString* name = spoof_call(RetAddr, strNew, (const char*)hn);
+        Il2cppString* value = spoof_call(RetAddr, strNew, (const char*)sig);
         if (!name || !value) return;
 
         using SetHeaderFn = void(*)(void*, Il2cppString*, Il2cppString*);
@@ -180,7 +185,32 @@ void SendRequest_H(void* request) {
         << (urlStr.empty() ? " [empty - both layouts failed]" : (usedStd ? "" : " [legacy layout]"))
         << std::endl;
 
-    // Discord presence: only fires on room URLs, and only when the room ID actually changes.
+    // Discord presence: capture the local account id from the Notifications hub URL
+    // (/Notifications/hub/v1?...id=<accountId>), which the client opens right after login. This is
+    // how the presence learns WHO the local player is, so it can look up their own room + "Appear
+    // Online To" setting.
+    {
+        size_t hubPos = urlStr.find("/Notifications/hub/v1");
+        if (hubPos != std::string::npos) {
+            size_t idPos = urlStr.find("id=", hubPos);
+            if (idPos != std::string::npos) {
+                uint64_t acc = 0;
+                size_t i = idPos + 3;
+                while (i < urlStr.size() && urlStr[i] >= '0' && urlStr[i] <= '9') {
+                    acc = acc * 10 + (urlStr[i] - '0');
+                    i++;
+                }
+                // Capture unconditionally: the hub URL is seen only ONCE (on connect), so gating
+                // on IsRunning() would lose the id forever if presence wasn't up yet. SetLocalAccountId
+                // just stores it (atomic) and the 10s poll uses it once presence is running.
+                if (acc != 0) {
+                    std::thread([acc]() { DiscordRPC::SetLocalAccountId(acc); }).detach();
+                }
+            }
+        }
+    }
+
+    // Discord presence: refresh on room URLs, and only when the room ID actually changes.
     {
         size_t roomsPos = urlStr.find("/Room_server/rooms/");
         if (roomsPos != std::string::npos) {
@@ -193,9 +223,8 @@ void SendRequest_H(void* request) {
             }
             static std::atomic<uint64_t> lastRoomId{ 0 };
             if (id != 0 && DiscordRPC::IsRunning() && lastRoomId.exchange(id) != id) {
-                std::string urlCopy = urlStr;
-                std::thread([urlCopy]() {
-                    DiscordRPC::SetRoomFromUrl(urlCopy);
+                std::thread([]() {
+                    DiscordRPC::RefreshPresence();
                     }).detach();
             }
         }

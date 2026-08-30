@@ -1,6 +1,7 @@
 #include "RR/Patching/Patches.h"
 #include "Protections/Protections.h"
 #include "Utils/logging.h"
+#include "Utils/obf.h"
 #include "Discord/DiscordRPC_Presence.h"
 #include <DbgHelp.h>
 #include <algorithm>
@@ -381,20 +382,21 @@ static void TestServerConnection() {
 // 403. Only a 200 lets this client continue - a wrong/old/absent DLL is denied and aborts, so it
 // never connects. This string MUST equal the server's ConfigCampus.PatchSignature.
 // ================================================================
-static const wchar_t* CAMPUS_PATCH_SIG = L"CAMPUS-2025-8f3a1c9e2b7d4610a5e0";
-
 static bool VerifyPatch() {
     bool ok = false;
+    // Host + signature are skCrypt'd so they aren't plaintext in the DLL. Decrypted into
+    // std::wstring copies here (this fn has no __try, so objects with destructors are fine).
+    std::wstring host = (const wchar_t*)skCrypt(L"gameauth.ddns.net");
     HINTERNET hSession = WinHttpOpen(L"CampusPatch/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (hSession) {
-        HINTERNET hConnect = WinHttpConnect(hSession, L"gameauth.ddns.net", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
         if (hConnect) {
             HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", L"/api/patch/verify", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
             if (hRequest) {
                 DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
                 WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
 
-                std::wstring header = std::wstring(L"X-Campus-Patch: ") + CAMPUS_PATCH_SIG + L"\r\n";
+                std::wstring header = std::wstring((const wchar_t*)skCrypt(L"X-Campus-Patch: ")) + std::wstring((const wchar_t*)skCrypt(L"CAMPUS-2025-2h7Fc20FKokap9Ah3t")) + L"\r\n";
                 if (WinHttpSendRequest(hRequest, header.c_str(), (DWORD)-1L, NULL, 0, 0, 0)
                     && WinHttpReceiveResponse(hRequest, NULL)) {
                     DWORD status = 0, size = sizeof(status);
@@ -438,7 +440,11 @@ static DWORD WINAPI InitThread(LPVOID)
         return 1;
     }
 
+#ifndef NDEBUG
+    // Debug only: mirror std::cout to the session .txt. Release ships with NO console AND NO log
+    // file - it stays silent.
     CampusLogging::Init(g_selfModule);
+#endif
 
     ULONGLONG t0 = GetTickCount64();
     RR::Patches::Resolve();
@@ -482,6 +488,10 @@ static void CreateConsole()
     SetEnvironmentVariableA("DISABLE_VR", "1");
     SetEnvironmentVariableA("VR_DISABLED", "1");
 
+    // RELEASE (NDEBUG): no console window. All logging still goes to the session .txt via
+    // CampusLogging (its TeeBuf writes the file even when there's no CONOUT$). DEBUG keeps the
+    // visible console for live debugging.
+#ifndef NDEBUG
     AllocConsole();
 
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -542,6 +552,10 @@ static void CreateConsole()
     printf("\x1b[1m\x1b[38;5;120m[CampusPatch]\x1b[0m loaded - target: "
         "\x1b[38;5;227mgameauth.ddns.net\x1b[0m  "
         "\x1b[38;5;240m(build " __DATE__ " " __TIME__ ")\x1b[0m\n");
+#else
+    // No console; the banner still lands in the session .txt once CampusLogging installs the tee.
+    std::cout << "[CampusPatch] loaded - target: gameauth.ddns.net (build " __DATE__ " " __TIME__ ")\n";
+#endif
 }
 
 static void CleanupThreads()
@@ -571,7 +585,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             CleanupThreads();
             Protections::Shutdown();
             DiscordRPC::Shutdown();
+#ifndef NDEBUG
             CampusLogging::Shutdown();
+#endif
         }
         DeleteCriticalSection(&g_windowCS);
         FreeConsole();

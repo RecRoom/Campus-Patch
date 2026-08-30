@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include "json.hpp"
+#include "../Utils/obf.h"
 #include "../Discord/discord-rpc-win/discord-rpc/win64-dynamic/include/discord_rpc.h"
 
 using json = nlohmann::json;  // Add this line
@@ -25,8 +26,20 @@ namespace DiscordRPC {
     static std::atomic<bool> g_running{ false };
     static std::atomic<bool> g_initialized{ false };
     static std::atomic<bool> g_discordReady{ false };
-    static std::string g_currentRoom = "Unknown Room";
+    static std::string g_currentRoom = ""; // empty = no room shown yet
     static std::mutex g_roomMutex;
+
+    // Presence mode decides what the "no room label" cases read as:
+    //   0 = LOGIN SCREEN  - online but not in any room yet (the very start, before loading in)
+    //   1 = HIDDEN        - in a room, but "Appear Online To" isn't All, so the room is withheld
+    //   2 = IN A ROOM     - g_currentRoom holds the label to show
+    // Starts at login screen; the very first presence push therefore reads "In Login Screen".
+    static std::atomic<int> g_presenceMode{ 0 };
+
+    // Set once the player has been in ANY room. "In Login Screen" is a STARTUP-only state (before
+    // loading in), so after this is true a transient "not in a room" reads as generic "Playing
+    // Campus" instead of flipping back to the login screen.
+    static std::atomic<bool> g_everInRoom{ false };
 
     // Store presence strings to keep them alive
     static std::string g_cachedDetails;
@@ -46,27 +59,40 @@ namespace DiscordRPC {
         return "";
     }
 
-    // Fetch room name from server
-    static std::string FetchRoomName(const std::string& roomId) {
-        if (roomId.empty()) return "";
+    // The player's OWN presence, from /api/presence/self/{accountId} - the SAME source the admin
+    // panel uses (their heartbeat): current room (name + isPrivate instance flag), that room's
+    // accessibility, and whether they appear online to EVERYONE. Works for dorms and private rooms.
+    struct RoomInfo {
+        std::string name;
+        bool isPrivate = false;         // private INSTANCE (dorm / private session)
+        int  accessibility = -1;        // room accessibility: 1 Public, 2 Unlisted, 3/4 Dev, -1 unpublished/unknown
+        bool appearOnlineToAll = true;  // "Appear Online To" == All
+        bool found = false;             // they're in a room
+        bool ok = false;                // the HTTP fetch + parse succeeded
+    };
+
+    // Fetch the caller's presence from the server (admin-panel data source).
+    static RoomInfo FetchSelf(uint64_t accountId) {
+        RoomInfo info;
+        if (accountId == 0) return info;
 
         std::wstring host = L"gameauth.ddns.net";
-        std::wstring path = L"/Room_server/rooms/" + std::wstring(roomId.begin(), roomId.end()) + L"/";
+        std::wstring path = L"/api/presence/self/" + std::to_wstring(accountId);
 
         HINTERNET hSession = WinHttpOpen(L"DiscordRPC/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-        if (!hSession) return "";
+        if (!hSession) return info;
 
         HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
         if (!hConnect) {
             WinHttpCloseHandle(hSession);
-            return "";
+            return info;
         }
 
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
         if (!hRequest) {
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
-            return "";
+            return info;
         }
 
         // Disable certificate verification for simplicity
@@ -74,18 +100,22 @@ namespace DiscordRPC {
             SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
 
-        if (!WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0)) {
+        // Stamp the patch signature - this WinHTTP call is separate from the game's own requests,
+        // so without the header the server's per-request patch gate 403s it and the presence can
+        // never read a room (everything falls back to a generic "Playing Campus").
+        std::wstring patchHeader = std::wstring(L"X-Campus-Patch: ") + (const wchar_t*)skCrypt(L"CAMPUS-2025-2h7Fc20FKokap9Ah3t") + L"\r\n";
+        if (!WinHttpSendRequest(hRequest, patchHeader.c_str(), (DWORD)-1L, NULL, 0, 0, 0)) {
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
-            return "";
+            return info;
         }
 
         if (!WinHttpReceiveResponse(hRequest, NULL)) {
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
-            return "";
+            return info;
         }
 
         std::string response;
@@ -100,46 +130,100 @@ namespace DiscordRPC {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
 
-        // Parse JSON
+        // Parse JSON: { found, name, isPrivate, accessibility, appearOnlineToAll }.
         try {
             auto jsonData = json::parse(response);
-            if (jsonData.contains("Name") && jsonData["Name"].is_string()) {
-                return jsonData["Name"].get<std::string>();
-            }
+            info.ok = true;
+            info.found = jsonData.value("found", false);
+            info.name = jsonData.value("name", std::string(""));
+            info.isPrivate = jsonData.value("isPrivate", false);
+            info.accessibility = jsonData.value("accessibility", -1);
+            info.appearOnlineToAll = jsonData.value("appearOnlineToAll", true);
         }
         catch (const std::exception& e) {
             std::cout << TAG_DISCORD() << "JSON parse error: " << e.what() << "\n";
         }
 
-        return "";
+        return info;
     }
 
     bool IsRunning() { return g_running.load(); }
 
-    void SetRoomFromUrl(const std::string& url) {
-        // SendRequest.h invokes this on a DETACHED thread. If Shutdown() has
-        // already run (process exit, DLL unload), g_currentRoom / g_roomMutex /
-        // g_cachedDetails may be mid-destruction, and touching them races the
-        // CRT and crashes the process. Bail early -- and wrap the whole thing
-        // in a catch so any WinHTTP exception during teardown doesn't propagate
-        // out of a detached thread (which is std::terminate).
+    // The local player's account id, captured from the Notifications hub URL (?id=<accountId>) the
+    // client opens after login. 0 while still on the login screen.
+    static std::atomic<uint64_t> g_localAccountId{ 0 };
+
+    void SetLocalAccountId(uint64_t id) {
+        if (id == 0) return;
+        uint64_t prev = g_localAccountId.exchange(id);
+        if (prev != id) RefreshPresence(); // refresh immediately once we know who we are
+    }
+
+    // Set the presence mode + room label, then push. mode: 0 login-screen, 1 hidden, 2 in-room.
+    static void SetPresence(int mode, const std::string& room) {
+        g_presenceMode = mode;
+        {
+            std::lock_guard<std::mutex> lock(g_roomMutex);
+            g_currentRoom = room;
+        }
+        if (g_initialized && g_discordReady) UpdatePresence();
+    }
+
+    // Recompute the Discord presence from the server (the admin-panel data source). Called on room
+    // changes AND on a timer, so it "constantly" reflects the current room AND the live "Appear
+    // Online To" setting. Runs on a detached/worker thread; guarded like SetRoomFromUrl.
+    void RefreshPresence() {
         if (!g_running.load()) return;
+        uint64_t acc = g_localAccountId.load();
+        if (acc == 0) return; // still on the login screen - nothing to look up yet
         try {
-            std::string roomId = ExtractRoomIdFromUrl(url);
-            if (roomId.empty()) return;
-            std::string roomName = FetchRoomName(roomId);
+            RoomInfo info = FetchSelf(acc);
             if (!g_running.load()) return; // may have shut down during the HTTPS wait
-            if (!roomName.empty()) {
-                SetCurrentRoom("^" + roomName);
+            std::cout << TAG_DISCORD() << "presence self acc=" << acc
+                << " ok=" << info.ok << " found=" << info.found
+                << " priv=" << info.isPrivate << " access=" << info.accessibility
+                << " all=" << info.appearOnlineToAll << " name=" << info.name << "\n";
+            if (!info.ok) return;          // fetch/parse failed (e.g. server missing the endpoint) - leave as-is
+
+            // NOT in a room: at the very start (never been in a room) that's the login/loading
+            // screen; after they've loaded in once it's just the menu/idle -> generic, NOT a flip
+            // back to "In Login Screen" (which was overwriting the real room on later polls).
+            if (!info.found) { SetPresence(g_everInRoom.load() ? 1 : 0, ""); return; }
+
+            // We're in a room now - past the login screen for good.
+            g_everInRoom = true;
+
+            // In a room, but "Appear Online To" isn't All: withhold the room (generic, not a lie
+            // about being on the login screen).
+            if (!info.appearOnlineToAll) { SetPresence(1, ""); return; }
+
+            // Dev-only / dev-unlisted / unpublished (unknown) maps: just "[PRIVATE]", name masked.
+            bool devOrUnpublished = (info.accessibility == 3 || info.accessibility == 4 || info.accessibility < 0);
+            if (devOrUnpublished) { SetPresence(2, "[PRIVATE]"); return; }
+
+            // A private INSTANCE of a normal (published) room: "[PRIVATE] <name>".
+            if (info.isPrivate) {
+                SetPresence(2, info.name.empty() ? "[PRIVATE]" : ("[PRIVATE] " + info.name));
+                return;
             }
-            else {
-                SetCurrentRoom("Room " + roomId);  // Fallback
-            }
+
+            // Public instance of a normal room: show the name (single "^", names may already carry one).
+            if (info.name.empty())
+                SetPresence(0, "");                                  // no name -> treat as not-really-in-a-room
+            else if (info.name[0] == '^')
+                SetPresence(2, info.name);
+            else
+                SetPresence(2, "^" + info.name);
         }
         catch (...) {
-            // Swallow -- we're on a detached thread; letting an exception
-            // escape becomes std::terminate.
+            // Swallow -- detached thread; an escaping exception becomes std::terminate.
         }
+    }
+
+    // Kept for the SendRequest hook (fires on room fetches): just refresh from the server, which
+    // uses the captured account id rather than the room id in the URL.
+    void SetRoomFromUrl(const std::string& /*url*/) {
+        RefreshPresence();
     }
 
     void SetCurrentRoom(const std::string& roomName) {
@@ -171,6 +255,27 @@ namespace DiscordRPC {
         }
     }
 
+    // Privacy-aware room setter (see SetRoomFromUrl). Unlike SetCurrentRoom this ALLOWS the two
+    // special values the privacy rules need: "[PRIVATE]" (mask) and "" (hide the room entirely).
+    // A normal public label still gets a light guard against query-string junk.
+    void SetRoomLabel(const std::string& label) {
+        if (!label.empty() && label != "[PRIVATE]") {
+            if (label.length() > 50 ||
+                label.find('?') != std::string::npos ||
+                label.find("null") != std::string::npos ||
+                label.find("undefined") != std::string::npos) {
+                return;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_roomMutex);
+            g_currentRoom = label;
+        }
+        if (g_initialized && g_discordReady) {
+            UpdatePresence();
+        }
+    }
+
     void UpdatePresence() {
         if (!g_initialized || !g_discordReady) {
             return;
@@ -179,9 +284,21 @@ namespace DiscordRPC {
         std::lock_guard<std::mutex> roomLock(g_roomMutex);
         std::lock_guard<std::mutex> presenceLock(g_presenceMutex);
 
-        // Cache strings so they stay alive
-        g_cachedDetails = "In " + g_currentRoom;
-        g_cachedState = "Playing Campus";
+        // Details depend on the presence mode: login screen (not in a room), hidden (in a room but
+        // withheld by "Appear Online To"), or in a room.
+        int mode = g_presenceMode.load();
+        if (mode == 0) {            // login / loading screen - online, not in a room yet
+            g_cachedDetails = "In Login Screen";
+            g_cachedState = "";
+        }
+        else if (mode == 1) {       // in a room but hidden by the appear-online setting
+            g_cachedDetails = "Playing Campus";
+            g_cachedState = "";
+        }
+        else {                      // in a room
+            g_cachedDetails = "In " + g_currentRoom;
+            g_cachedState = "Playing Campus";
+        }
 
         DiscordRichPresence discordPresence{};
         memset(&discordPresence, 0, sizeof(discordPresence));
@@ -249,9 +366,16 @@ namespace DiscordRPC {
     }
 
     void CallbackThread() {
+        int tick = 0;
         while (g_running) {
             if (g_initialized) {
                 Discord_RunCallbacks();
+            }
+            // Every ~10s re-check the server: keeps the room current AND continuously honors the
+            // live "Appear Online To" setting (hide the room the moment it's set to not-All).
+            if (++tick >= 100) {
+                tick = 0;
+                RefreshPresence();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
