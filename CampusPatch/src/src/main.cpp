@@ -3,14 +3,28 @@
 #include "Utils/logging.h"
 #include "Utils/obf.h"
 #include "Discord/DiscordRPC_Presence.h"
+#include "RR/UnityExplorer/imgui_inspector.h"          // <-- added for ImGui Inspector
+// The Present hook below feeds window messages to ImGui and asks it what it wants to
+// capture, so main.cpp needs imgui itself - not just the inspector's facade.
+#include "RR/imgui/imgui.h"
+#include "RR/imgui/backends/imgui_impl_win32.h"
+#include "RR/UI/CampusMenu.h"
+#include "RR/UI/DevPanel.h"
+#include "RR/Patching/Il2CppApi.h"
+#include "Utils/DebugTools.h"
 #include <DbgHelp.h>
 #include <algorithm>
 #include <vector>
 #include <atomic>
 #include <winhttp.h>
+#include <d3d11.h>                    // for D3D11 device
+#include <dxgi.h>                     // for swapchain
 #pragma comment(lib, "dbghelp.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "winhttp.lib")
+// FindPresentAddress creates a throwaway device to read IDXGISwapChain's vtable.
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 static HMODULE g_selfModule = nullptr;
 static char g_crashDumpDir[MAX_PATH] = {};
@@ -21,6 +35,132 @@ static std::atomic<bool> g_gameWindowFound{ false };
 static HANDLE g_keyThread = nullptr;
 static CRITICAL_SECTION g_windowCS;
 
+// ================================================================
+// IMGUI INSPECTOR – GLOBALS
+// ================================================================
+static bool g_imguiInitialized = false;
+static ID3D11Device* g_pd3dDevice = nullptr;
+static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
+static IDXGISwapChain* g_pSwapChain = nullptr;
+static HWND g_gameHwnd = nullptr;
+
+// ================================================================
+// UI HIERARCHY DUMPER (debug only – no external DLL needed)
+// ================================================================
+#ifndef NDEBUG
+
+#include <iomanip>
+#include <sstream>
+
+static void DumpTransform(void* transform, int depth, int maxDepth = 20) {
+    if (!transform || depth > maxDepth) return;
+
+    void* gameObject = *(void**)((uintptr_t)transform + 0x10);
+    if (!gameObject) return;
+
+    Il2cppString* nameStr = *(Il2cppString**)((uintptr_t)gameObject + 0x60);
+    std::string name = nameStr ? ReadIl2CppString(nameStr) : "(unnamed)";
+
+    std::string indent(depth * 2, ' ');
+
+    void* component = *(void**)((uintptr_t)gameObject + 0x30);
+    std::string compType = "unknown";
+    if (component) {
+        std::stringstream ss;
+        ss << std::hex << "(0x" << (uintptr_t)component << ")";
+        compType = ss.str();
+    }
+
+    std::cout << indent << "├─ " << name << " [transform 0x" << std::hex << (uintptr_t)transform << std::dec << "] comp " << compType << "\n";
+
+    int childCount = *(int*)((uintptr_t)transform + 0x38);
+    auto getChild = (void* (*)(void*, int))(GA + RR::Methods::UnityEngine::Transform_GetChild);
+    if (!getChild) return;
+
+    for (int i = 0; i < childCount; i++) {
+        void* child = getChild(transform, i);
+        if (child) DumpTransform(child, depth + 1, maxDepth);
+    }
+}
+
+static void DumpUIHierarchy() {
+    if (!GA || !NtHeaders) {
+        std::cout << "[UI Dump] GameAssembly not ready\n";
+        return;
+    }
+
+    if (!RR::Methods::UnityEngine::GameObject_Find) {
+        std::cout << "[UI Dump] GameObject_Find not resolved – cannot dump.\n";
+        return;
+    }
+
+    using FindFn = void* (*)(Il2cppString*);
+    auto find = (FindFn)(GA + RR::Methods::UnityEngine::GameObject_Find);
+    if (!find) {
+        std::cout << "[UI Dump] Find function null\n";
+        return;
+    }
+
+    const char* rootNames[] = { "UICanvas", "Main Canvas", "Canvas", "AppNavMenu", "UI Root" };
+    void* rootGO = nullptr;
+
+    using Il2cppStringNewFn = Il2cppString * (*)(const char*);
+    auto strNew = (Il2cppStringNewFn)(GA + RR::Methods::Il2cpp::il2cpp_string_new);
+    if (!strNew) {
+        std::cout << "[UI Dump] il2cpp_string_new not available\n";
+        return;
+    }
+
+    for (const char* name : rootNames) {
+        Il2cppString* s = strNew(name);
+        if (!s) continue;
+        rootGO = find(s);
+        if (rootGO) {
+            std::cout << "[UI Dump] Found root: " << name << "\n";
+            break;
+        }
+    }
+
+    if (!rootGO) {
+        std::cout << "[UI Dump] No known UI root found – dumping from AppNavMenu instance if available.\n";
+        using GetInstanceFn = void* (*)();
+        auto getInstance = (GetInstanceFn)(GA + RR::Methods::AppNav::GetInstance);
+        if (getInstance) {
+            void* appNav = getInstance();
+            if (appNav) {
+                void* transform = *(void**)((uintptr_t)appNav + 0x30);
+                if (transform) {
+                    std::cout << "[UI Dump] Dumping from AppNavMenu transform\n";
+                    DumpTransform(transform, 0);
+                    return;
+                }
+            }
+        }
+        std::cout << "[UI Dump] Could not find any UI root.\n";
+        return;
+    }
+
+    auto getTransform = (void* (*)(void*))(GA + RR::Methods::UnityEngine::GameObject_get_transform);
+    if (!getTransform) {
+        std::cout << "[UI Dump] get_transform not resolved\n";
+        return;
+    }
+    void* rootTransform = getTransform(rootGO);
+    if (!rootTransform) {
+        std::cout << "[UI Dump] Root has no transform\n";
+        return;
+    }
+
+    std::cout << "[UI Dump] ========== UI HIERARCHY ==========\n";
+    DumpTransform(rootTransform, 0);
+    std::cout << "[UI Dump] ========== END ==========\n";
+}
+
+#endif // NDEBUG
+
+// ================================================================
+// CRASH HANDLER
+// ================================================================
 static LONG WINAPI CrashDumpFilter(EXCEPTION_POINTERS* ep) {
     if (g_crashDumpDir[0] == 0) return EXCEPTION_CONTINUE_SEARCH;
 
@@ -56,6 +196,9 @@ static void InstallCrashHandler(HMODULE self) {
     SetUnhandledExceptionFilter(CrashDumpFilter);
 }
 
+// ================================================================
+// WINDOW HELPERS
+// ================================================================
 static HWND SafeFindWindow(const char* title) {
     __try {
         return FindWindowA(nullptr, title);
@@ -208,17 +351,30 @@ static bool IsGameReady()
     return (width > 400 && height > 300);
 }
 
+// ================================================================
+// KEY LISTENER THREAD (includes UI dump and ImGui toggle)
+// ================================================================
 static DWORD WINAPI KeyListenerThread(LPVOID)
 {
     std::cout << TAG_INIT() << "Key listener started\n";
     std::cout << TAG_INIT() << "Shift+ESC - Toggle console\n";
     std::cout << TAG_INIT() << "F11 - Toggle fullscreen\n";
     std::cout << TAG_INIT() << "F12 - Toggle always on top\n";
+#ifndef NDEBUG
+    std::cout << TAG_INIT() << "INSERT - Toggle dev panel (Notify/Chat, Asset Spawn, Players)\n";
+#endif
 
     bool shiftHeld = false;
     bool f11Pressed = false;
     bool f12Pressed = false;
     bool isTopmost = true;
+    bool nPressed = false;   // Ctrl+Shift+N notification - always-on feature (Release too)
+#ifndef NDEBUG
+    bool uPressed = false;
+    bool dPressed = false;
+    bool iPressed = false;
+    bool mPressed = false;
+#endif
 
     while (g_keyListenerRunning) {
         bool shiftNow = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
@@ -226,7 +382,15 @@ static DWORD WINAPI KeyListenerThread(LPVOID)
         bool escNow = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
         bool f11Now = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
         bool f12Now = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+#ifndef NDEBUG
+        bool uNow = (GetAsyncKeyState('U') & 0x8000) != 0;
+        bool iNow = (GetAsyncKeyState('I') & 0x8000) != 0;
+#endif
+        bool ctrlNow = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
 
+        // Shift+ESC: toggle console
         if (shiftNow && escNow && !shiftHeld) {
             HWND hWnd = GetConsoleWindow();
             if (hWnd && SafeIsWindow(hWnd)) {
@@ -249,6 +413,7 @@ static DWORD WINAPI KeyListenerThread(LPVOID)
             shiftHeld = false;
         }
 
+        // F11: toggle fullscreen
         if (f11Now && !f11Pressed) {
             SimulateAltEnter();
             f11Pressed = true;
@@ -258,6 +423,7 @@ static DWORD WINAPI KeyListenerThread(LPVOID)
             f11Pressed = false;
         }
 
+        // F12: toggle topmost
         if (f12Now && !f12Pressed) {
             HWND gameWnd = GetGameWindow();
             if (gameWnd && SafeIsWindow(gameWnd)) {
@@ -278,11 +444,27 @@ static DWORD WINAPI KeyListenerThread(LPVOID)
             f12Pressed = false;
         }
 
+#ifndef NDEBUG
+        // INSERT: show/hide the dev panel. The only non-console key in the build, and
+        // deliberately a single key (not a Ctrl+Shift chord). Debug builds only.
+        if ((GetAsyncKeyState(VK_INSERT) & 0x8000) && !dPressed) {
+            DevPanel::ToggleVisibility();
+            dPressed = true;
+            Sleep(200);
+        }
+        else if (!(GetAsyncKeyState(VK_INSERT) & 0x8000)) {
+            dPressed = false;
+        }
+#endif
+
         Sleep(30);
     }
     return 0;
 }
 
+// ================================================================
+// ANTI-CHEAT STARTER
+// ================================================================
 static DWORD WINAPI AntiCheatStarterThread(LPVOID) {
     std::cout << "\n";
     std::cout << TAG_INIT() << "Waiting for game to fully load...\n";
@@ -309,7 +491,6 @@ static DWORD WINAPI AntiCheatStarterThread(LPVOID) {
             }
         }
 
-        // Check if game is ready (only after 20 seconds to avoid false positives)
         if (waitCount > 200 && IsGameReady()) {
             gameReady = true;
             std::cout << "\n";
@@ -325,23 +506,23 @@ static DWORD WINAPI AntiCheatStarterThread(LPVOID) {
         waitCount++;
     }
 
-    // Always start anti-cheat, even if game isn't ready yet
     std::cout << "\n";
     std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
     std::cout << "       \t\tKurt Cobain just fucking hates you, go suck a fat one\n";
     std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
     std::cout << "\n";
 
-    // Initialize protections (this will run anti-debug checks but shouldn't block)
     Protections::Initialize();
     g_antiCheatStarted = true;
 
-    // Start Discord RPC
     DiscordRPC::Start();
 
     return 0;
 }
 
+// ================================================================
+// SERVER CONNECTION TEST
+// ================================================================
 static void TestServerConnection() {
     std::cout << TAG_INIT() << "Testing connection to " << CAMPUS_NAMESERVER_HOST << "...\n";
 
@@ -352,7 +533,6 @@ static void TestServerConnection() {
         if (hConnect) {
             HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", L"/", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
             if (hRequest) {
-                // Disable certificate verification for testing
                 DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
                 WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
 
@@ -376,16 +556,10 @@ static void TestServerConnection() {
 }
 
 // ================================================================
-// PATCH HANDSHAKE - the server is the gatekeeper.
-// At startup we POST /api/patch/verify with a shared-secret header. The SERVER holds the real
-// secret (ConfigCampus.PatchSignature) and compares it: a match answers HTTP 200, anything else
-// 403. Only a 200 lets this client continue - a wrong/old/absent DLL is denied and aborts, so it
-// never connects. This string MUST equal the server's ConfigCampus.PatchSignature.
+// PATCH VERIFICATION
 // ================================================================
 static bool VerifyPatch() {
     bool ok = false;
-    // Host + signature are skCrypt'd so they aren't plaintext in the DLL. Decrypted into
-    // std::wstring copies here (this fn has no __try, so objects with destructors are fine).
     std::wstring host = (const wchar_t*)skCrypt(L"gameauth.ddns.net");
     HINTERNET hSession = WinHttpOpen(L"CampusPatch/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (hSession) {
@@ -418,6 +592,286 @@ static bool VerifyPatch() {
     return ok;
 }
 
+// ================================================================
+// GLOBAL VARIABLES (defined here)
+// ================================================================
+uintptr_t GA = 0;
+const IMAGE_NT_HEADERS* NtHeaders = nullptr;
+uintptr_t Referee = 0;
+uint64_t* RetAddr = nullptr;
+
+// UnityEngine method RVAs
+uintptr_t RR::Methods::UnityEngine::Camera_set_fieldOfView = 0;
+uintptr_t RR::Methods::UnityEngine::Camera_get_fieldOfView = 0;
+uintptr_t RR::Methods::UnityEngine::Graphic_set_color = 0;
+uintptr_t RR::Methods::UnityEngine::CanvasRenderer_SetColor = 0;
+uintptr_t RR::Methods::UnityEngine::Canvas_ForceUpdateCanvases = 0;
+uintptr_t RR::Methods::UnityEngine::GameObject_Find = 0;
+uintptr_t RR::Methods::UnityEngine::GameObject_get_transform = 0;
+uintptr_t RR::Methods::UnityEngine::Transform_GetChild = 0;
+uintptr_t RR::Methods::UnityEngine::Transform_SetParent = 0;
+uintptr_t RR::Methods::UnityEngine::Transform_GetSiblingIndex = 0;
+uintptr_t RR::Methods::UnityEngine::Transform_SetSiblingIndex = 0;
+uintptr_t RR::Methods::UnityEngine::Object_Instantiate_GameObject = 0;
+uintptr_t RR::Methods::UnityEngine::GameObject_SetActive = 0;
+uintptr_t RR::Methods::UnityEngine::GameObject_get_name = 0;
+uintptr_t RR::Methods::UnityEngine::UnityEvent_AddListener = 0;
+
+// IL2CPP API functions
+uintptr_t RR::Methods::Il2cpp::il2cpp_string_new = 0;
+uintptr_t RR::Methods::Il2cpp::il2cpp_object_get_class = 0;
+uintptr_t RR::Methods::Il2cpp::il2cpp_object_new = 0;
+uintptr_t RR::Methods::Il2cpp::il2cpp_class_get_method_from_name = 0;
+uintptr_t RR::Methods::Il2cpp::il2cpp_class_get_parent = 0;
+
+// ================================================================
+// INIT GLOBALS
+// ================================================================
+bool InitGlobals() {
+    GA = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
+    Referee = (uintptr_t)GetModuleHandleA("Referee.dll");
+
+    if (!GA) {
+        printf("[Campus] init: GameAssembly.dll not loaded\n");
+        return false;
+    }
+    if (!Referee) {
+        printf("[Campus] init: Referee.dll not loaded\n");
+        return false;
+    }
+
+    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(GA);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        printf("[Campus] init: GameAssembly has bad DOS header\n");
+        return false;
+    }
+
+    NtHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(GA + dos->e_lfanew);
+    if (NtHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        printf("[Campus] init: GameAssembly has bad NT header\n");
+        NtHeaders = nullptr;
+        return false;
+    }
+
+    printf("[Campus] init: GameAssembly=%p Referee=%p SizeOfImage=0x%X\n",
+        (void*)GA, (void*)Referee, NtHeaders->OptionalHeader.SizeOfImage);
+    return true;
+}
+
+// ================================================================
+// D3D11 PRESENT HOOK  -  what actually puts the inspector on screen
+// ================================================================
+// Both halves of this used to be stubs: GetD3D11DeviceAndSwapchain was a TODO that
+// only printed "not implemented", and InstallPresentHook had its MinHook calls
+// commented out and read vtable[7] (which is GetDevice - Present is index 8). So
+// ImGuiInspector::Initialize was never reached and Render() never ran. The inspector
+// had never drawn a single frame.
+//
+// Approach: we do NOT need the game's swapchain to find Present. Every
+// IDXGISwapChain shares one vtable, so we spin up a throwaway device+swapchain on a
+// hidden window, read Present's address out of its vtable, throw it away, and hook
+// that address. The game's own swapchain arrives as `this` on the first real call,
+// and we initialise ImGui from it then - which also means we cannot race the game's
+// renderer setup.
+
+// Contents of the sprite menu. Kept here rather than in CampusMenu.h so that file
+// stays pure presentation - it knows how to draw a toggle, not what any toggle means.
+static void BuildCampusMenu() {
+    static bool built = false;
+    if (built) return;
+    built = true;
+
+    CampusMenu::AddTab("Visuals");
+    CampusMenu::AddToggle("Unity Explorer", false, [](bool on) {
+        if (on != ImGuiInspector::IsVisible()) ImGuiInspector::ToggleVisibility();
+        });
+
+    CampusMenu::AddTab("Debug");
+    CampusMenu::AddToggle("Verbose HTTP log", false, [](bool) {
+        // Placeholder row: proves the toggle plumbing end to end. Wire real settings
+        // here as they are added.
+        });
+}
+
+static bool  g_imguiReady = false;      // ImGui initialised against the real swapchain
+static HWND  g_imguiHwnd = nullptr;
+static WNDPROC g_oWndProc = nullptr;
+
+// ImGui's Win32 backend input handler.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
+// Input only goes to ImGui while the window is open, so gameplay is untouched when
+// the inspector is hidden.
+static LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_imguiReady && (ImGuiInspector::IsVisible() || CampusMenu::IsVisible() || DevPanel::IsVisible())) {
+        if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+            return 1;
+
+        // Swallow mouse/keyboard the UI is using so clicks don't also reach the game.
+        ImGuiIO& io = ImGui::GetIO();
+        bool mouse = (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST);
+        bool key = (msg >= WM_KEYFIRST && msg <= WM_KEYLAST);
+        if ((mouse && io.WantCaptureMouse) || (key && io.WantCaptureKeyboard))
+            return 1;
+    }
+    return CallWindowProc(g_oWndProc, hWnd, msg, wParam, lParam);
+}
+
+typedef HRESULT(WINAPI* PresentFn)(IDXGISwapChain*, UINT, UINT);
+static PresentFn oPresent = nullptr;
+
+HRESULT WINAPI PresentHook(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    // First real frame: everything we need is reachable from the swapchain itself.
+    if (!g_imguiReady && pSwapChain) {
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&g_pd3dDevice)) && g_pd3dDevice) {
+            g_pd3dDevice->GetImmediateContext(&g_pd3dDeviceContext);
+
+            DXGI_SWAP_CHAIN_DESC desc{};
+            pSwapChain->GetDesc(&desc);
+            g_imguiHwnd = desc.OutputWindow;
+            g_pSwapChain = pSwapChain;
+
+            if (g_pd3dDeviceContext && g_imguiHwnd) {
+                ImGuiInspector::Initialize(g_imguiHwnd, g_pd3dDevice, g_pd3dDeviceContext);
+                CampusMenu::SetDevice(g_pd3dDevice);   // sprite loading needs the device
+                BuildCampusMenu();
+
+                // Without this the window draws but never responds - no clicks, no
+                // typing, no expanding tree nodes.
+                g_oWndProc = (WNDPROC)SetWindowLongPtrW(g_imguiHwnd, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
+
+                g_imguiReady = true;
+                g_imguiInitialized = true;
+                std::cout << "[ImGui] Inspector attached to the game's swapchain (hwnd 0x"
+                    << std::hex << (uintptr_t)g_imguiHwnd << std::dec << "). Ctrl+Shift+I to toggle.\n";
+            }
+        }
+        if (!g_imguiReady)
+            std::cout << "[ImGui] Could not initialise from the swapchain.\n";
+    }
+
+    // Mouse detach: while any ImGui surface is up, free the cursor from the game so it
+    // can click the panel, and let ImGui draw its own cursor. The game re-locks the
+    // cursor every frame for mouselook, so this has to run every frame too. When all
+    // surfaces are hidden, release the clip so the game takes the cursor back. INSERT
+    // toggles the dev panel, so pressing it once frees the mouse, pressing again grabs.
+    {
+        static bool s_wasFree = false;
+        bool wantFree = ImGuiInspector::IsVisible() || CampusMenu::IsVisible() || DevPanel::IsVisible();
+        if (wantFree) {
+            ClipCursor(nullptr);                       // undo the game's cursor clip
+            while (ShowCursor(TRUE) < 0) {}            // force the cursor visible
+            if (g_imguiReady) ImGui::GetIO().MouseDrawCursor = true;
+            s_wasFree = true;
+        }
+        else if (s_wasFree) {
+            while (ShowCursor(FALSE) >= 0) {}          // hand the cursor back to the game
+            if (g_imguiReady) ImGui::GetIO().MouseDrawCursor = false;
+            s_wasFree = false;
+        }
+    }
+
+    if (g_imguiReady && (ImGuiInspector::IsVisible() || CampusMenu::IsVisible() || DevPanel::IsVisible())) {
+        // ImGui draws into whatever render target is bound. The game does not
+        // guarantee the backbuffer is still bound at Present, so bind it ourselves.
+        // Built per frame on purpose: it stays correct across resolution changes and
+        // fullscreen toggles without hooking ResizeBuffers.
+        ID3D11Texture2D* backBuffer = nullptr;
+        if (SUCCEEDED(pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer)) && backBuffer) {
+            ID3D11RenderTargetView* rtv = nullptr;
+            if (SUCCEEDED(g_pd3dDevice->CreateRenderTargetView(backBuffer, nullptr, &rtv)) && rtv) {
+                g_pd3dDeviceContext->OMSetRenderTargets(1, &rtv, nullptr);
+                ImGuiInspector::Render();
+                rtv->Release();
+            }
+            backBuffer->Release();
+        }
+    }
+
+    return oPresent(pSwapChain, SyncInterval, Flags);
+}
+
+// Create a throwaway device + swapchain purely to read Present out of the vtable.
+// Returns nullptr if the game is not D3D11 (a DX12/Vulkan title will land here).
+static void* FindPresentAddress() {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"CampusDummyWnd";
+    if (!RegisterClassExW(&wc)) {
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
+    }
+
+    HWND wnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW,
+        0, 0, 64, 64, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!wnd) { UnregisterClassW(wc.lpszClassName, wc.hInstance); return nullptr; }
+
+    DXGI_SWAP_CHAIN_DESC sd{};
+    sd.BufferCount = 1;
+    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = wnd;
+    sd.SampleDesc.Count = 1;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+    IDXGISwapChain* sc = nullptr;
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
+
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+        levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+        &sd, &sc, &dev, nullptr, &ctx);
+
+    void* present = nullptr;
+    if (SUCCEEDED(hr) && sc) {
+        // IDXGISwapChain vtable: 0-2 IUnknown, 3-6 IDXGIObject, 7 GetDevice,
+        // 8 Present. The old code took index 7 and would have hooked GetDevice.
+        void** vtable = *(void***)sc;
+        present = vtable[8];
+    }
+    else {
+        std::cout << "[ImGui] D3D11CreateDeviceAndSwapChain failed (0x"
+            << std::hex << hr << std::dec << ") - is this game D3D11?\n";
+    }
+
+    if (sc)  sc->Release();
+    if (ctx) ctx->Release();
+    if (dev) dev->Release();
+    DestroyWindow(wnd);
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+
+    return present;
+}
+
+// Hook Present. MinHook is already initialised by RR::Patches (MH_Initialize).
+static void InstallPresentHook() {
+    void* present = FindPresentAddress();
+    if (!present) {
+        std::cout << "[ImGui] Could not locate IDXGISwapChain::Present - inspector will not draw.\n";
+        return;
+    }
+
+    std::cout << "[ImGui] IDXGISwapChain::Present at 0x"
+        << std::hex << (uintptr_t)present << std::dec << "\n";
+
+    if (MH_CreateHook(present, (void*)PresentHook, (LPVOID*)&oPresent) != MH_OK) {
+        std::cout << "[ImGui] MH_CreateHook(Present) failed.\n";
+        return;
+    }
+    if (MH_EnableHook(present) != MH_OK) {
+        std::cout << "[ImGui] MH_EnableHook(Present) failed.\n";
+        return;
+    }
+    std::cout << "[ImGui] Present hook installed - inspector renders from the next frame.\n";
+}
+
+// ================================================================
+// INIT THREAD
+// ================================================================
 static DWORD WINAPI InitThread(LPVOID)
 {
     for (int i = 0; i < 200; i++) {
@@ -425,10 +879,6 @@ static DWORD WINAPI InitThread(LPVOID)
         Sleep(100);
     }
 
-    // Early friendly check: confirm the server accepts our signature before we bother hooking, so
-    // a wrong/old patch exits cleanly with a message instead of loading into a game that then 403s
-    // on everything. This is just UX - the REAL enforcement is the X-Campus-Patch header stamped
-    // on every request (SendRequest.h), which the server validates per request.
     if (!VerifyPatch()) {
         std::cout << TAG_INIT() << CLR_RED << "[patch] server rejected this patch - closing.\n" << CLR_RESET;
         Sleep(2500);
@@ -441,8 +891,6 @@ static DWORD WINAPI InitThread(LPVOID)
     }
 
 #ifndef NDEBUG
-    // Debug only: mirror std::cout to the session .txt. Release ships with NO console AND NO log
-    // file - it stays silent.
     CampusLogging::Init(g_selfModule);
 #endif
 
@@ -451,6 +899,36 @@ static DWORD WINAPI InitThread(LPVOID)
     ULONGLONG t1 = GetTickCount64();
     RR::Patches::Patch();
     ULONGLONG t2 = GetTickCount64();
+
+    // ---- deferred, metadata-dependent setup -------------------------------------
+    // Everything above only needs GameAssembly.dll to be LOADED. Anything that asks
+    // the IL2CPP RUNTIME a question (class lookups, the assembly sweep, the
+    // cheat-quit hook) has to wait for il2cpp_init to finish - the loop at the top of
+    // this function does not wait for that, it only waits for the module.
+    //
+    // Running metadata work at inject time returned null for everything and crashed
+    // the game a few seconds in. This thread waits for a real runtime, then does it.
+    // Gated. This thread enters the IL2CPP runtime and patches a game method, and
+    // running it unconditionally crashed the game on startup - so it is opt-in until it
+    // is proven on a real session. Without it the client can still self-quit after a
+    // Hile trip, which is the pre-existing bug this was meant to fix.
+    // Debug-only worker: resolves the Unity method table (inspector + Ctrl+Shift+U
+    // dumper) from il2cpp metadata once the runtime is up. The cheat-quit suppression
+    // is NOT here any more - it hooks by GA+RVA in Patch(), like every other hook, so
+    // it needs no runtime worker and carries no startup-timing risk.
+    if (DebugTools::Enabled())
+    CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+        if (!Il2CppApi::WaitForRuntime(120000)) {
+            std::cout << TAG_WARN() << "il2cpp runtime never became ready ("
+                      << Il2CppApi::g_attachError << ") - inspector/dumper disabled\n";
+            Il2CppApi::ReportOnce();
+            return 0;
+        }
+
+        std::cout << TAG_INIT() << "il2cpp runtime ready\n";
+        RR::Patches::ResolveUnityMethods();
+        return 0;
+        }, nullptr, 0, nullptr);
 
     std::cout << "\n";
     std::cout << "\t[////////////////////////////////////////////////////////////////]\n";
@@ -467,8 +945,25 @@ static DWORD WINAPI InitThread(LPVOID)
     std::cout << TAG_INIT() << "[+] Patches applied successfully!\n";
     std::cout << "\n";
 
-    // Test server connection
     TestServerConnection();
+
+    // ================================================================
+    // INITIALIZE IMGUI INSPECTOR
+    // ================================================================
+#ifndef NDEBUG
+    // Install the Present hook only, and only when the debug tools are switched on.
+    // This replaces the swapchain's Present and the window's WndProc - by far the most
+    // invasive thing this DLL does, and not something to impose on a normal session.
+    //
+    // ImGui itself is initialised on the first real frame, from inside the hook, using
+    // the swapchain the game hands us.
+    //
+    // The old code tried to do it the other way round - fetch the device up front and
+    // only then hook - which cannot work here: this runs during injection, long before
+    // the game's renderer exists, so the device was always null and Initialize() was
+    // never called. That is why no window ever appeared.
+    if (DebugTools::Enabled()) InstallPresentHook();
+#endif
 
     std::cout << TAG_INIT() << "Starting anti-cheat starter thread...\n";
     HANDLE hThread = CreateThread(nullptr, 0, AntiCheatStarterThread, nullptr, 0, nullptr);
@@ -481,6 +976,9 @@ static DWORD WINAPI InitThread(LPVOID)
     return 0;
 }
 
+// ================================================================
+// CONSOLE SETUP
+// ================================================================
 static void CreateConsole()
 {
     SetEnvironmentVariableA("STEAMVR_ENABLED", "0");
@@ -488,9 +986,6 @@ static void CreateConsole()
     SetEnvironmentVariableA("DISABLE_VR", "1");
     SetEnvironmentVariableA("VR_DISABLED", "1");
 
-    // RELEASE (NDEBUG): no console window. All logging still goes to the session .txt via
-    // CampusLogging (its TeeBuf writes the file even when there's no CONOUT$). DEBUG keeps the
-    // visible console for live debugging.
 #ifndef NDEBUG
     AllocConsole();
 
@@ -553,11 +1048,13 @@ static void CreateConsole()
         "\x1b[38;5;227mgameauth.ddns.net\x1b[0m  "
         "\x1b[38;5;240m(build " __DATE__ " " __TIME__ ")\x1b[0m\n");
 #else
-    // No console; the banner still lands in the session .txt once CampusLogging installs the tee.
     std::cout << "[CampusPatch] loaded - target: gameauth.ddns.net (build " __DATE__ " " __TIME__ ")\n";
 #endif
 }
 
+// ================================================================
+// CLEANUP
+// ================================================================
 static void CleanupThreads()
 {
     g_keyListenerRunning = false;
@@ -569,6 +1066,9 @@ static void CleanupThreads()
     }
 }
 
+// ================================================================
+// DLL MAIN
+// ================================================================
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
@@ -589,6 +1089,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             CampusLogging::Shutdown();
 #endif
         }
+        // Shutdown ImGui Inspector
+        ImGuiInspector::Shutdown();
         DeleteCriticalSection(&g_windowCS);
         FreeConsole();
     }

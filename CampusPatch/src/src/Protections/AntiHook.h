@@ -13,77 +13,12 @@
 #include <mutex>
 #include <iomanip>
 #include <cstdint>
+
 #include "../RR/Patching/Console.h"
 #include "AntiKill.h"
+#include "../RR/Methods.h"          // <-- use the single source of truth
 
 #pragma comment(lib, "psapi.lib")
-
-// Forward declare the Methods namespace from your project
-namespace RR {
-    namespace Methods {
-        namespace Referee {
-            extern uintptr_t Check1;
-            extern uintptr_t Check2;
-            extern uintptr_t Check3;
-            extern uintptr_t Check4;
-        }
-
-        namespace LegacyTlsAuthentication {
-            extern uintptr_t NotifyServerCertificate;
-        }
-
-        namespace HTTPManager {
-            extern uintptr_t SendRequest;
-        }
-
-        namespace HttpResponse {
-            extern uintptr_t get_DataAsText;
-            extern uintptr_t Receive;
-        }
-
-        namespace UIGradient {
-            extern uintptr_t set_Gradient;
-        }
-
-        namespace SteamVR {
-            extern uintptr_t SetFieldOfView;
-        }
-
-        namespace Il2cpp {
-            extern uintptr_t il2cpp_string_new;
-            extern uintptr_t il2cpp_object_get_class;
-            extern uintptr_t il2cpp_object_new;
-        }
-
-        namespace System {
-            namespace Uri {
-                extern uintptr_t ToString;
-                extern uintptr_t ctor;
-            }
-        }
-
-        namespace UnityGradient {
-            extern uintptr_t SetKeys;
-            extern uintptr_t get_colorKeys;
-            extern uintptr_t get_alphaKeys;
-        }
-
-        namespace RecNetImages {
-            extern uintptr_t LoadByName;
-            extern uintptr_t LoadRoom;
-            extern uintptr_t LoadInvention;
-            extern uintptr_t LoadPlayerEvent;
-            extern uintptr_t LoadAccount;
-            extern uintptr_t LoadAnnouncement;
-            extern uintptr_t LoadBytes;
-            extern uintptr_t StaticConstructor;
-        }
-
-        namespace ImageSignature {
-            extern uint32_t Outer;
-        }
-    }
-}
 
 namespace AntiHook {
 
@@ -108,6 +43,8 @@ namespace AntiHook {
         g_allowedOffsets.insert(RR::Methods::Il2cpp::il2cpp_string_new);
         g_allowedOffsets.insert(RR::Methods::Il2cpp::il2cpp_object_get_class);
         g_allowedOffsets.insert(RR::Methods::Il2cpp::il2cpp_object_new);
+        g_allowedOffsets.insert(RR::Methods::Il2cpp::il2cpp_class_get_method_from_name);
+        g_allowedOffsets.insert(RR::Methods::Il2cpp::il2cpp_class_get_parent);
         g_allowedOffsets.insert(RR::Methods::System::Uri::ToString);
         g_allowedOffsets.insert(RR::Methods::System::Uri::ctor);
         g_allowedOffsets.insert(RR::Methods::UnityGradient::SetKeys);
@@ -121,7 +58,7 @@ namespace AntiHook {
         g_allowedOffsets.insert(RR::Methods::RecNetImages::LoadAnnouncement);
         g_allowedOffsets.insert(RR::Methods::RecNetImages::LoadBytes);
         g_allowedOffsets.insert(RR::Methods::RecNetImages::StaticConstructor);
-        g_allowedOffsets.insert((uintptr_t)RR::Methods::ImageSignature::Outer);
+        g_allowedOffsets.insert((uintptr_t)RR::Methods::ImageSignature::Verify); // fixed: was Outer
         g_allowedOffsets.insert(RR::Methods::Referee::Check1);
         g_allowedOffsets.insert(RR::Methods::Referee::Check2);
         g_allowedOffsets.insert(RR::Methods::Referee::Check3);

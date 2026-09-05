@@ -1,41 +1,22 @@
 #pragma once
 #include "Inc/Includes.h"
 
-uintptr_t GA = 0;
-const IMAGE_NT_HEADERS* NtHeaders = nullptr;
-uintptr_t Referee = 0;
-uint64_t* RetAddr = nullptr;
+// ============================================================
+// GLOBAL VARIABLES – DECLARATIONS ONLY (defined in main.cpp)
+// ============================================================
+extern uintptr_t GA;
+extern const IMAGE_NT_HEADERS* NtHeaders;
+extern uintptr_t Referee;
+extern uint64_t* RetAddr;
 
-static bool InitGlobals() {
-    GA = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
-    Referee = (uintptr_t)GetModuleHandleA("Referee.dll");
+// ============================================================
+// FUNCTION DECLARATION (defined in main.cpp)
+// ============================================================
+bool InitGlobals();
 
-    if (!GA) {
-        printf("[Campus] init: GameAssembly.dll not loaded\n");
-        return false;
-    }
-    if (!Referee) {
-        printf("[Campus] init: Referee.dll not loaded\n");
-        return false;
-    }
-
-    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(GA);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        printf("[Campus] init: GameAssembly has bad DOS header\n");
-        return false;
-    }
-
-    NtHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(GA + dos->e_lfanew);
-    if (NtHeaders->Signature != IMAGE_NT_SIGNATURE) {
-        printf("[Campus] init: GameAssembly has bad NT header\n");
-        NtHeaders = nullptr;
-        return false;
-    }
-
-    printf("[Campus] init: GameAssembly=%p Referee=%p SizeOfImage=0x%X\n",
-        (void*)GA, (void*)Referee, NtHeaders->OptionalHeader.SizeOfImage);
-    return true;
-}
+// ============================================================
+// TEMPLATE HELPERS (inline, safe in header)
+// ============================================================
 
 template <typename T>
 T read(void* obj, std::ptrdiff_t offset) {

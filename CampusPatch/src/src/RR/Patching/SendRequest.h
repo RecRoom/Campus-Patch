@@ -107,41 +107,18 @@ static Il2cppString* ReplaceSubstringInIl2cppString(Il2cppString* original, cons
     return strNew(utf8Str.c_str());
 }
 
-// Stamp X-Campus-Patch on the request via BestHTTP HTTPRequest.SetHeader. The server checks this
-// header on every request, so a client without the correct patch (old DLL, no DLL, tampered DLL)
-// is denied on EVERY call - no whitelist, no time window to exploit.
+// NOTE: the X-Campus-Patch stamping that used to live here has been REMOVED.
 //
-// The header name and (above all) the signature are skCrypt'd: they're stored ENCRYPTED in the
-// binary and only decrypted here into stack buffers, so `strings` on the DLL can't reveal the
-// secret. Copied into fixed buffers (not std::string) because this fn uses __try, which can't
-// hold objects with destructors.
-static void StampPatchHeader(void* request) {
-    if (!request) return;
-    __try {
-        using Il2cppStringNewFn = Il2cppString * (*)(const char*);
-        auto strNew = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
-        if (!strNew) return;
-
-        char hn[24];  strcpy_s(hn, sizeof(hn), skCrypt("X-Campus-Patch"));
-        char sig[48]; strcpy_s(sig, sizeof(sig), skCrypt("CAMPUS-2025-2h7Fc20FKokap9Ah3t"));
-
-        Il2cppString* name = spoof_call(RetAddr, strNew, (const char*)hn);
-        Il2cppString* value = spoof_call(RetAddr, strNew, (const char*)sig);
-        if (!name || !value) return;
-
-        using SetHeaderFn = void(*)(void*, Il2cppString*, Il2cppString*);
-        auto setHeader = reinterpret_cast<SetHeaderFn>(GA + RR::Methods::HTTPRequest::SetHeader);
-        if (!setHeader) return;
-
-        spoof_call(RetAddr, setHeader, request, name, value);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
+// It called BestHTTP HTTPRequest.SetHeader on every outbound request to prove the client
+// was running this patch. That is gone on BOTH platforms now (see campus_hook.cpp on Quest),
+// so neither patch depends on a game method for the gate.
+//
+// CONSEQUENCE: the server can no longer tell a patched client from an unpatched one per
+// request. PatchGateMiddleware.Enable MUST stay false, or every call 403s. See
+// Middleware/PatchGateMiddleware.cs. The startup check (POST /api/patch/verify) still runs
+// from the patch's OWN http client, which needs no game offsets.
 
 void SendRequest_H(void* request) {
-    // Prove this is our patch on every single request.
-    StampPatchHeader(request);
-
     void* uri = read<void*>(request, 16);
     if (!uri) {
         return SendRequest_O(request);

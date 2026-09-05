@@ -13,6 +13,16 @@
 
 namespace Protections {
     inline void Initialize() {
+#ifdef PATCH_DEBUG
+        // Debug build: anti-cheat completely disabled
+        Protections::log << "\n";
+        Protections::log << "\t[////////////////////////////////////////////////////////////////]\n";
+        Protections::log << "  " << CLR_YELLOW << "\t\tANTI-CHEAT DISABLED (Debug build)" << CLR_RESET << "\n";
+        Protections::log << "\t[////////////////////////////////////////////////////////////////]\n";
+        Protections::log << "\n";
+        return;
+#else
+        // Release build: full anti-cheat active
         Protections::log << "\n";
         Protections::log << "\t[////////////////////////////////////////////////////////////////]\n";
         Protections::log << "  " << CLR_RED << "\t\tKURT COBAIN'S ANTI-CHEAT SYSTEM" << CLR_RESET << "\n";
@@ -64,29 +74,16 @@ namespace Protections {
         AntiDebugger::StartMonitoring();
         // AntiSandbox::StartMonitoring(); // DISABLED
 
-        // Start AntiHook protection - DISABLED 2026-08-23
-        //
-        // A string diff of WorkingCampusPatch.dll (Aug 17, known good) against the
-        // Aug 20+ builds shows HookProtection is the ONLY protection subsystem that
-        // differs: 1 string in the working build vs 15 in the broken ones. Every
-        // other layer (Anti-Debug 8/8, AntiKill 1/1, Anti-Cheat, Anti-Injection) is
-        // identical. In the working build Initialize() was never called, so the
-        // linker dropped everything except the shutdown message.
-        //
-        // What it does when enabled: HookScannerThread sleeps 15s then loops FOREVER
-        // re-reading GameAssembly every 5 seconds, in a process that also hosts
-        // Referee's anti-tamper. Kyle verified empirically that swapping back to the
-        // Aug 17 DLL makes the problems stop.
-        //
-        // It also protects nothing: ScanAllFunctionsForHooks only iterates
-        // g_allowedOffsets and then allows every offset it finds, because the
-        // membership test is against the very set it is iterating. It can never
-        // report a hook. So this costs a permanent 5-second scan loop for no benefit.
-        //
+        // AntiHook protection is DISABLED (see comments in original)
         // AntiHook::Initialize();
+#endif
     }
 
     inline void Shutdown() {
+#ifdef PATCH_DEBUG
+        // Debug build: nothing to shut down
+        return;
+#else
         Protections::log << TAG_ANTI() << "Kurt Cobain is shutting down protections...\n";
 
         AntiHook::Shutdown();
@@ -94,6 +91,7 @@ namespace Protections {
 
 #ifndef NDEBUG
         CampusLogging::Shutdown();
+#endif
 #endif
     }
 }
